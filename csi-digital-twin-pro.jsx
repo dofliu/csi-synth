@@ -67,6 +67,7 @@ const INTERF={
   pet:   { label:"寵物移動", desc:"小型移動散射體間歇擾動" },
   hvac:  { label:"空調週期", desc:"冷氣壓縮機約 0.2Hz 週期起伏" },
   cochan:{ label:"同頻/流量", desc:"共享頻道流量→採樣不穩、突發遺失" },
+  plmd:  { label:"週期性肢動", desc:"睡眠肢體抽動(PLMD)約每 20–40s 一次" },
 };
 // ── wall / boundary material: reflection coefficient scaling ──
 const WALL_MAT={
@@ -140,6 +141,21 @@ function wallImages(tx,W,H,refl){
 const dist=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
 // ── deterministic hash-based RNG (stable per-config calibration, not per-frame noise) ──
 function seeded(i,salt){ let x=Math.sin((i+1)*12.9898+(salt||0)*78.233)*43758.5453; return x-Math.floor(x); }
+// ── seedable stream PRNG (mulberry32): every stochastic term (AWGN/CFO jitter/diffuse/
+//    AGC/packet-loss/STO) is drawn from this, so a whole synthetic capture is byte-repro-
+//    ducible from (seed + config). This is what lets a sim run be regenerated and aligned
+//    frame-by-frame against a real AX211 capture recorded under matched conditions. ──
+function mulberry32(seed){ let a=seed>>>0; return function(){ a|=0; a=(a+0x6D2B79F5)|0;
+  let t=Math.imul(a^(a>>>15),1|a); t=(t+Math.imul(t^(t>>>7),61|t))^t; return ((t^(t>>>14))>>>0)/4294967296; }; }
+// ── OFDM subcarrier structure: real 802.11 CSI is NOT usable on every tone — the DC
+//    subcarrier is nulled and the band edges are guard bands (no energy / unreliable CSI).
+//    Intel AX211 delivers this structure; masking it here makes the exported CSI and the
+//    heatmap match what a real capture actually contains. 1=usable, 0=null/guard. ──
+function ofdmMask(nSub){ const m=new Uint8Array(nSub); m.fill(1);
+  const guard=Math.max(2,Math.round(nSub*0.045));
+  for(let k=0;k<guard;k++){ m[k]=0; m[nSub-1-k]=0; }
+  m[Math.floor(nSub/2)]=0;                       // null DC subcarrier
+  return m; }
 // per-subcarrier fixed amplitude calibration offsets (Intel CSI has these; stable per capture)
 function makeCalib(nSub,spread){ const c=new Float64Array(nSub);
   for(let k=0;k<nSub;k++) c[k]=1+(seeded(k,7)*2-1)*spread; return c; }
@@ -173,6 +189,13 @@ function realBreath(t,bpm,ampM){
   const shape=Math.sin(ph)+0.18*Math.sin(2*ph);   // asymmetric inhale/exhale
   const ampMod=1+0.12*Math.sin(2*Math.PI*0.03*t+1.3);
   return ampM*ampMod*shape;
+}
+// cardiac micro-motion: a SEPARATE spectral band from respiration (~1.0–1.3 Hz) with
+// heart-rate variability, so the breathing-band and cardiac-band peaks are distinguishable
+// (this is what a dual-band respiration+heartbeat estimator must separate on real data).
+function realHeart(t,hrBpm,ampM){
+  const f=(hrBpm/60)*(1+0.045*Math.sin(2*Math.PI*0.1*t)+0.02*Math.sin(2*Math.PI*0.25*t));
+  return ampM*(Math.sin(2*Math.PI*f*t)+0.30*Math.sin(4*Math.PI*f*t));
 }
 
 // ── multipath propagation (for the propagation view) ──
@@ -269,6 +292,9 @@ export default function CSIDigitalTwinPro(){
   const [thermal,setThermal]=useState(false);        // slow environmental (thermal) drift
   const [acqReal,setAcqReal]=useState(false);        // real CSI acquisition defects
   const [night,setNight]=useState(false);            // overnight time-compressed mode
+  const [seed,setSeed]=useState(12345);              // PRNG seed → reproducible capture
+  const [ofdmStruct,setOfdmStruct]=useState(false);  // AX211 null/guard subcarrier structure
+  const [blanket,setBlanket]=useState(false);        // 棉被遮蔽 → weaker person scatter
   const [nightState,setNightState]=useState({stage:"wake",clockMin:0,ahi:0,events:0,lossPct:0});
   const [nightLog,setNightLog]=useState([]);         // {min,stage,type} apnea/hypopnea events
   const [valid,setValid]=useState(null);             // {mae,n,acc,tot,loss}
@@ -300,11 +326,14 @@ export default function CSIDigitalTwinPro(){
   const [calibComp,setCalibComp]=useState(null);   // {genericBPM, calibBPM, truth}
   const calibProfileRef=useRef(null);              // learned best subcarriers for this room
 
-  const R=useRef({}); R.current={hw,space,task,brSet,heart,realism,physReal,apneaType,interf,useFurn,running,tx,rx,person,antView,N_SUB,N_ANT,showProp,wallMat,useGround,thermal,acqReal,night};
+  const R=useRef({}); R.current={hw,space,task,brSet,heart,realism,physReal,apneaType,interf,useFurn,running,tx,rx,person,antView,N_SUB,N_ANT,showProp,wallMat,useGround,thermal,acqReal,night,seed,ofdmStruct,blanket};
   const staticRef=useRef([]);   // per-antenna static channel
   const agcRef=useRef(0);
   const calibRef=useRef(null);  // per-subcarrier fixed amplitude calibration vector
   const stoRef=useRef(0);       // current sampling-time-offset phase ramp (per packet)
+  const rngRef=useRef(mulberry32(12345));  // seedable per-frame stochastic stream
+  const ofdmRef=useRef(null);   // OFDM usable-subcarrier mask (null/guard tones)
+  const csiExpRef=useRef([]);   // ring buffer of complex CSI (view antenna) for export
   const nightRef=useRef({t0:0,events:[],lastEvt:-999,lastLog:0}); // overnight accumulator
   const validRef=useRef({sum:0,n:0,ok:0,tot:0}); // validation accumulator (truth vs est)
   const lossRef=useRef({drop:0,pkt:0});          // packet-loss accounting
@@ -322,6 +351,10 @@ export default function CSIDigitalTwinPro(){
   useEffect(()=>{ recomputeStatic(); },[tx,rx,space,hw,useFurn,N_SUB,wallMat,useGround]);
   // regenerate per-subcarrier calibration vector when hardware (N_SUB) changes
   useEffect(()=>{ calibRef.current=makeCalib(N_SUB,ACQ.calAmp); },[N_SUB]);
+  // rebuild OFDM usable-subcarrier mask when hardware (N_SUB) changes
+  useEffect(()=>{ ofdmRef.current=ofdmMask(N_SUB); },[N_SUB]);
+  // reseed the stochastic stream whenever the seed changes (reproducibility control)
+  useEffect(()=>{ rngRef.current=mulberry32(seed>>>0); },[seed]);
   // material/ground/thermal change invalidates site calibration too
   useEffect(()=>{ setCalibrated(false); calibProfileRef.current=null; setCalibComp(null); },[wallMat,useGround]);
 
@@ -338,7 +371,8 @@ export default function CSIDigitalTwinPro(){
   useEffect(()=>{ setHist(Array.from({length:HIST},()=>new Array(N_SUB).fill(0.5))); },[N_SUB]);
   // reset validation + packet-loss accumulators whenever the scenario changes
   useEffect(()=>{ validRef.current={sum:0,n:0,ok:0,tot:0}; lossRef.current={drop:0,pkt:0}; setValid(null);
-  },[task,space,interf,realism,physReal,acqReal,night,brSet,wallMat,useGround,thermal,hw]);
+    csiExpRef.current=[]; rngRef.current=mulberry32(seed>>>0);
+  },[task,space,interf,realism,physReal,acqReal,night,brSet,wallMat,useGround,thermal,hw,ofdmStruct,blanket,seed]);
   // (re)build the overnight schedule when entering night mode
   useEffect(()=>{ if(night){ nightRef.current.data=buildNight(); setNightLog(nightRef.current.data.events);
       tRef.current=0; bufRef.current=[]; breathSeen.current=-999; } else setNightLog([]); },[night]);
@@ -362,6 +396,7 @@ export default function CSIDigitalTwinPro(){
       }
       if(st.running && f.length && staticRef.current.length && fN.current%3===0){
         tRef.current+=1/FS; const t=tRef.current; const s=SPACES[st.space];
+        const rng=rngRef.current;                      // seeded stochastic stream (reproducible)
         let px=st.person.px, py=st.person.py, present=true, extra=0;
         const rl=REALISM[st.realism];
         let nightCur=null, effBpm=st.brSet, truthLabel="";
@@ -388,14 +423,14 @@ export default function CSIDigitalTwinPro(){
         else if(st.task==="empty"){ present=false; truthLabel="empty"; }
         else if(st.task==="breathe"){ truthLabel="breathe";
           extra = st.physReal ? 2*realBreath(t,st.brSet,0.006) : 2*0.006*Math.sin(2*Math.PI*(st.brSet/60)*t);
-          if(st.heart) extra+=2*0.0015*Math.sin(2*Math.PI*(72/60)*t);
+          if(st.heart) extra+=2*realHeart(t,72,0.0015);
         }
         else if(st.task==="walk"){ truthLabel="walk"; const cyc=t%10,W=s.w,mx=0.6;
           px=cyc<5?mx+(cyc/5)*(W-2*mx):(W-mx)-((cyc-5)/5)*(W-2*mx); py=s.bed[1]+Math.sin(t*1.1)*0.4; }
         else if(st.task==="posture"){ truthLabel="breathe"; const seg=Math.floor(t/8)%4, off=[[0,0],[-0.15,0.05],[0.15,0.05],[0,-0.1]][seg];
           px=s.bed[0]+off[0]; py=s.bed[1]+off[1];
           extra = st.physReal ? 2*realBreath(t,st.brSet,0.006) : 2*0.006*Math.sin(2*Math.PI*(st.brSet/60)*t);
-          if(st.heart) extra+=2*0.0015*Math.sin(2*Math.PI*(72/60)*t); }
+          if(st.heart) extra+=2*realHeart(t,72,0.0015); }
         else if(st.task==="apnea"){ truthLabel="apnea"; const hold=(t%30)>=15&&(t%30)<25;
           const br = st.physReal ? 2*realBreath(t,st.brSet,0.006) : 2*0.006*Math.sin(2*Math.PI*(st.brSet/60)*t);
           if(!hold){ extra=br; }
@@ -436,11 +471,17 @@ export default function CSIDigitalTwinPro(){
         } else if(iType==="cochan"){
           // shared-channel traffic: bursty packet loss + sampling instability
           lossBoost = ((t%6)<2)?0.5:0.05;
+        } else if(iType==="plmd"){
+          // periodic limb movement: brief limb twitch every ~30s (0.033 Hz), a
+          // transient non-respiratory scatterer that can be mistaken for motion
+          if((t%30)<1.2){ interfScat.push({px:s.bed[0]+0.35,py:s.bed[1]+0.30,extra:0.05*Math.sin(t*9)}); }
         }
+        // 棉被遮蔽: dielectric cover attenuates the through-body scatter path
+        if(st.blanket) personScale*=0.55;
         // expose interference markers for rendering (throttled)
         if(fN.current%3===0){
           const marks=interfScat.map(sc=>({x:sc.px,y:sc.py,
-            label: iType==="twoppl"?"人2": iType==="walker"?"路人": iType==="fan"?"風扇": iType==="pet"?"寵物": iType==="hvac"?"空調":"?"}));
+            label: iType==="twoppl"?"人2": iType==="walker"?"路人": iType==="fan"?"風扇": iType==="pet"?"寵物": iType==="hvac"?"空調": iType==="plmd"?"肢動":"?"}));
           if(iType==="faraway"&&present) marks.push({x:px,y:py,label:"遠"});
           setIMark(marks);
         }
@@ -459,17 +500,19 @@ export default function CSIDigitalTwinPro(){
         }
 
         // AGC slow drift update
-        agcRef.current += (Math.random()*2-1)*rl.agc*0.05;
+        agcRef.current += (rng()*2-1)*rl.agc*0.05;
         agcRef.current *= 0.995;
         const gain = 1 + Math.tanh(agcRef.current);
 
         // per-packet acquisition/thermal terms
-        const stoRamp = st.acqReal ? (Math.random()*2-1)*ACQ.sto : 0;   // sampling-time-offset phase ramp
+        const stoRamp = st.acqReal ? (rng()*2-1)*ACQ.sto : 0;   // sampling-time-offset phase ramp
         const thScale = st.thermal ? (1+0.06*Math.sin(2*Math.PI*t/40)) : 1; // slow environmental gain drift
         const thPh    = st.thermal ? 0.18*Math.sin(2*Math.PI*t/55) : 0;     // slow environmental phase drift
         const cal     = calibRef.current;
+        const omask   = st.ofdmStruct ? ofdmRef.current : null;   // null/guard subcarrier mask
         // per-antenna complex CSI = static + person, then impairments
         const perAntAmp=[]; let sampleRe=0,sampleIm=0;
+        const expRe=new Float64Array(N_SUB), expIm=new Float64Array(N_SUB);   // view-antenna complex CSI (export)
         const viewK=Math.floor(N_SUB/2);
         for(let ai=0; ai<st.N_ANT; ai++){
           const stat=staticRef.current[ai];
@@ -483,7 +526,7 @@ export default function CSIDigitalTwinPro(){
           const amp=new Float64Array(N_SUB);
           // impairment phase terms
           const cfoP=2*Math.PI*rl.cfo*t;
-          const jit=(Math.random()*2-1)*rl.jit;
+          const jit=(rng()*2-1)*rl.jit;
           // Rician diffuse weights (physReal): split specular vs diffuse (K=8 dB)
           const Klin=Math.pow(10,8/10), wSpec=Math.sqrt(Klin/(Klin+1)), wDiff=Math.sqrt(1/(Klin+1));
           for(let k=0;k<N_SUB;k++){
@@ -493,8 +536,8 @@ export default function CSIDigitalTwinPro(){
             for(const rsc of rScat){ re+=rsc.re[k]*rsc.sc; im+=rsc.im[k]*rsc.sc; }
             if(st.physReal){ // diffuse: specular attenuation + temporally-varying diffuse term
               const amp0=Math.hypot(re,im);
-              re=re*wSpec+(Math.random()*2-1)*wDiff*amp0*0.7;
-              im=im*wSpec+(Math.random()*2-1)*wDiff*amp0*0.7;
+              re=re*wSpec+(rng()*2-1)*wDiff*amp0*0.7;
+              im=im*wSpec+(rng()*2-1)*wDiff*amp0*0.7;
             }
             // SFO: phase slope across subcarriers growing with time; +STO per-packet ramp; +thermal phase
             const sfoP=2*Math.PI*(rl.sfo*1e-6)*(k-N_SUB/2)*t*0.5;
@@ -502,14 +545,17 @@ export default function CSIDigitalTwinPro(){
             const rot=cfoP+sfoP+jit+stoP+thPh;
             const cr=Math.cos(rot), sr=Math.sin(rot);
             let nr=(re*cr-im*sr)*gain, ni=(re*sr+im*cr)*gain;
+            if(omask && !omask[k]){ nr=0; ni=0; }   // null/guard tone → dead CSI (AX211-realistic)
             let a=Math.hypot(nr,ni);
             if(st.acqReal && cal) a*=cal[k];      // per-subcarrier fixed amplitude calibration offset
             amp[k]=a;
-            if(ai===st.antView && k===viewK){ sampleRe=nr; sampleIm=ni; }
+            if(ai===st.antView){ expRe[k]=nr; expIm[k]=ni; if(k===viewK){ sampleRe=nr; sampleIm=ni; } }
           }
-          // AWGN at effective SNR (EMI lowers it)
+          // AWGN at effective SNR (EMI lowers it) — added to complex CSI so exported I/Q carries it too
           if(snrEff<44){ const sp2=amp.reduce((a,v)=>a+v*v,0)/N_SUB, np=sp2/Math.pow(10,snrEff/10), sd=Math.sqrt(np);
-            for(let k=0;k<N_SUB;k++) amp[k]=Math.abs(amp[k]+(Math.random()*2-1)*sd*1.1); }
+            for(let k=0;k<N_SUB;k++){ const noiseOn=!omask||omask[k];
+              amp[k]=Math.abs(amp[k]+(noiseOn?(rng()*2-1)*sd*1.1:0));
+              if(ai===st.antView && noiseOn){ expRe[k]+=(rng()*2-1)*sd*0.78; expIm[k]+=(rng()*2-1)*sd*0.78; } } }
           perAntAmp.push(amp);
         }
         const viewAmp=perAntAmp[Math.min(st.antView,perAntAmp.length-1)];
@@ -519,13 +565,19 @@ export default function CSIDigitalTwinPro(){
 
         // packet loss / non-uniform sampling: a dropped packet leaves a GAP in the CSI buffer
         const lossProb=(st.acqReal?ACQ.loss:0)+lossBoost;
-        const dropped=lossProb>0 && Math.random()<lossProb;
+        const dropped=lossProb>0 && rng()<lossProb;
         lossRef.current.pkt++; if(dropped) lossRef.current.drop++;
+        // real capture timestamp: nominal packet time + timestamp jitter (non-uniform sampling)
+        const ts=t+(st.acqReal?(rng()*2-1)*ACQ.tsJit/FS:0);
         if(!dropped){
           const meanAmp=viewAmp.reduce((a,v)=>a+v,0)/N_SUB;
           bufRef.current=[...bufRef.current.slice(-DFT_WIN),{mean:meanAmp,sub:Array.from(viewAmp)}];
           setSeries(s2=>[...s2.slice(-120),{t:+t.toFixed(1),v:+viewAmp[viewK].toFixed(4)}]);
           setIq(q=>[...q.slice(-60),{re:+sampleRe.toFixed(4),im:+sampleIm.toFixed(4)}]);
+          // buffer complex CSI (view antenna) in CSIKit (n_time × n_sub) layout for export:
+          // exported I/Q carries every impairment applied above → same pipeline runs on sim & real
+          csiExpRef.current.push({ts:+ts.toFixed(4), re:Array.from(expRe,v=>+v.toFixed(5)), im:Array.from(expIm,v=>+v.toFixed(5))});
+          if(csiExpRef.current.length>FS*12) csiExpRef.current.shift();
         }
         // SNR estimate + path count metric
         if(fN.current%20===0){
@@ -658,12 +710,74 @@ export default function CSIDigitalTwinPro(){
       }
     },200);
   }
+  // ── trigger a browser download of a text payload (falls back to clipboard) ──
+  function downloadFile(name,text,mime){
+    try{
+      const blob=new Blob([text],{type:mime||"text/plain"});
+      const url=URL.createObjectURL(blob), a=document.createElement("a");
+      a.href=url; a.download=name; document.body.appendChild(a); a.click();
+      document.body.removeChild(a); setTimeout(()=>URL.revokeObjectURL(url),1000);
+    }catch(e){ try{ navigator.clipboard&&navigator.clipboard.writeText(text); }catch(_){} }
+  }
+  // ── the full configuration snapshot: everything needed to (a) regenerate this exact
+  //    synthetic capture and (b) set up a matched real AX211 capture for comparison ──
+  function scenarioManifest(){
+    const V=validRef.current, lp=lossRef.current, ants=rxAntennas(rx,tx,N_ANT);
+    const m={
+      schema:"csi-digital-twin/manifest@1", seed,
+      radio:{ f_center_Hz:F0, bandwidth_Hz:BW, n_subcarriers:N_SUB, n_antennas:N_ANT,
+              sample_rate_Hz:FS, hardware:HW[hw].label, hardware_key:hw,
+              ofdm_structure:ofdmStruct, ofdm_usable_subcarriers:ofdmStruct?ofdmMask(N_SUB).reduce((a,v)=>a+v,0):N_SUB },
+      geometry:{ space:space, space_label:SPACES[space].label, width_m:sp.w, depth_m:sp.h,
+                 tx_m:[+tx[0].toFixed(3),+tx[1].toFixed(3)], rx_m:[+rx[0].toFixed(3),+rx[1].toFixed(3)],
+                 rx_antennas_m:ants.map(a=>[+a[0].toFixed(3),+a[1].toFixed(3)]),
+                 person_m:[+person.px.toFixed(3),+person.py.toFixed(3)],
+                 furniture:useFurn?sp.furn:[], wall_material:wallMat, wall_reflectivity:WALL_MAT[wallMat].refl,
+                 ground_reflection:useGround },
+      scenario:{ task, task_label:TASKS[task].label, night, apnea_type:task==="apnea"?apneaType:null,
+                 interference:interf, interference_label:INTERF[interf].label,
+                 heart:heart, blanket:blanket },
+      impairments:{ realism, snr_dB:REALISM[realism].snr, cfo_Hz:REALISM[realism].cfo,
+                    sfo_ppm:REALISM[realism].sfo, phys_realism:physReal, acq_defects:acqReal,
+                    thermal_drift:thermal, packet_loss_nominal:acqReal?ACQ.loss:0,
+                    ts_jitter_frac:acqReal?ACQ.tsJit:0, cal_amp_spread:acqReal?ACQ.calAmp:0, sto_rad:acqReal?ACQ.sto:0 },
+      ground_truth:{ breathing_bpm:(task==="breathe"||task==="posture"||task==="apnea")?brSet:null,
+                     heart_bpm:heart?72:null },
+      measured:{ bpm_MAE:V.n?+(V.sum/V.n).toFixed(3):null, bpm_samples:V.n,
+                 state_accuracy_pct:V.tot?+(100*V.ok/V.tot).toFixed(1):null,
+                 packet_loss_pct:lp.pkt?+(100*lp.drop/lp.pkt).toFixed(1):0 },
+    };
+    if(night&&nightRef.current.data){ const nd=nightRef.current.data;
+      m.overnight={ hypnogram:HYPNO, night_minutes:NIGHT_MIN, ahi_truth:nd.ahiTruth, ahi_motion_est:nd.ahiMotion,
+        events_total:nd.events.length, by_type:nd.by,
+        events:nd.events.map(e=>({at_min:+e.atMin.toFixed(2),dur_min:+e.dur.toFixed(3),type:e.type,stage:e.stage})) }; }
+    return m;
+  }
+  function exportManifest(){
+    const name=`twin_${space}_${task}${night?"_night":""}_seed${seed}.json`;
+    downloadFile(name, JSON.stringify(scenarioManifest(),null,2), "application/json");
+    setCopied("manifest"); setTimeout(()=>setCopied(false),1600);
+  }
+  // ── export the buffered complex CSI window in CSIKit (n_time × n_subcarrier) layout:
+  //    columns = t_s + I0..I{N-1} + Q0..Q{N-1}. Feed into the same estimate_rate/前處理
+  //    pipeline used for real AX211 → directly quantifies the sim-to-real gap (Table I–IV). ──
+  function exportCSIWindow(){
+    const win=csiExpRef.current; if(!win||!win.length){ setCopied("empty"); setTimeout(()=>setCopied(false),1600); return; }
+    const nS=win[0].re.length;
+    const head=["t_s",...Array.from({length:nS},(_,k)=>`I${k}`),...Array.from({length:nS},(_,k)=>`Q${k}`)];
+    const lines=[head.join(",")];
+    for(const fr of win) lines.push([fr.ts,...fr.re,...fr.im].join(","));
+    const name=`csi_${space}_${task}_seed${seed}_${win.length}f.csv`;
+    downloadFile(name, lines.join("\n"), "text/csv");
+    setCopied("csi"); setTimeout(()=>setCopied(false),1600);
+  }
   // ── export validation metrics as CSV to clipboard (for alignment with real AX211 capture) ──
   function exportValidation(){
     const V=validRef.current, lp=lossRef.current;
-    const rows=[["metric","value"],
+    const rows=[["metric","value"],["seed",seed],
       ["scenario", night?"overnight":TASKS[task].label],
       ["hardware", HW[hw].label],["space", SPACES[space].label],
+      ["ofdm_structure", ofdmStruct],["blanket_cover", blanket],
       ["wall_material", WALL_MAT[wallMat].label],["ground_reflect", useGround],
       ["thermal_drift", thermal],["realism", REALISM[realism].label],
       ["phys_real", physReal],["acq_defects", acqReal],["interference", INTERF[interf].label],
@@ -675,7 +789,7 @@ export default function CSIDigitalTwinPro(){
         ["events_total",nd.events.length],["events_osa",nd.by.osa],["events_csa",nd.by.csa],["events_hypo",nd.by.hypo]); }
     const csv=rows.map(r=>r.join(",")).join("\n");
     try{ navigator.clipboard&&navigator.clipboard.writeText(csv); }catch(e){}
-    setCopied(true); setTimeout(()=>setCopied(false),1600);
+    setCopied("csv"); setTimeout(()=>setCopied(false),1600);
   }
   // geometry
   const SVG_W=520, SVG_H=Math.round(SVG_W*sp.h/sp.w), M2PX=SVG_W/sp.w;
@@ -714,9 +828,9 @@ export default function CSIDigitalTwinPro(){
         <div>
           <p style={{margin:"0 0 2px",fontSize:11,color:SLATE,fontStyle:"italic"}}>WiFi CSI Digital Twin · PRO · DofLab</p>
           <h1 style={{margin:0,fontSize:21,fontWeight:700}}>CSI 數位孿生控制系統</h1>
-          <p style={{margin:"3px 0 0",fontSize:12,color:GRAY}}>MIMO · 材質多路徑 · 地面反射 · 採集缺陷 · 整夜情境 · 驗證比對</p>
+          <p style={{margin:"3px 0 0",fontSize:12,color:GRAY}}>MIMO · 材質多路徑 · 地面反射 · 採集缺陷 · OFDM結構 · 整夜情境 · 種子可重現 · 複數CSI匯出</p>
         </div>
-        <button onClick={()=>{ if(!running){tRef.current=0;bufRef.current=[];breathSeen.current=-999;agcRef.current=0;} setRunning(r=>!r); }}
+        <button onClick={()=>{ if(!running){tRef.current=0;bufRef.current=[];breathSeen.current=-999;agcRef.current=0;csiExpRef.current=[];rngRef.current=mulberry32(seed>>>0);} setRunning(r=>!r); }}
           style={{padding:"11px 26px",fontSize:15,fontWeight:700,cursor:"pointer",fontFamily:"inherit",borderRadius:4,
                   background:running?RED:GREEN,color:"white",border:"none"}}>
           {running?"■ 停止環境":"▶ 啟動 CSI 環境"}
@@ -792,6 +906,9 @@ export default function CSIDigitalTwinPro(){
                   ? "已啟用：延展人體(胸腹)＋呼吸變異＋擴散散射(Rician)＋背景微動。訊號更接近真實、更難偵測。"
                   : "關閉＝理想化（點散射＋正弦呼吸）。開啟後模擬真實物理，偵測難度上升約數倍。"}
               </p>
+              <label style={{display:"flex",alignItems:"center",gap:6,margin:"8px 0 0",fontSize:12,color:GRAY,cursor:"pointer"}}>
+                <input type="checkbox" checked={blanket} onChange={e=>setBlanket(e.target.checked)}/> 棉被遮蔽（人體散射 ×0.55）
+              </label>
             </div>
           </div>
           <div style={card}>
@@ -818,6 +935,28 @@ export default function CSIDigitalTwinPro(){
               {acqReal
                 ? `已啟用：封包遺失(~${Math.round(ACQ.loss*100)}%)造成非均勻採樣缺口＋時戳抖動＋每子載波振幅校正偏移＋STO 相位斜坡。這是 sim→real 最大落差。`
                 : "關閉＝理想均勻採樣。真實 Intel CSI 封包不等距、有遺失、每子載波振幅需校正。"}
+            </p>
+            <label style={{display:"flex",alignItems:"center",gap:7,margin:"9px 0 0",paddingTop:9,borderTop:`1px solid ${HAIR}`,cursor:"pointer"}}>
+              <input type="checkbox" checked={ofdmStruct} onChange={e=>setOfdmStruct(e.target.checked)}/>
+              <span style={{fontSize:12,fontWeight:600,color:ofdmStruct?AMBER:INK}}>AX211 子載波結構</span>
+            </label>
+            <p style={{margin:"5px 0 0",fontSize:10,color:GRAY,lineHeight:1.5}}>
+              {ofdmStruct
+                ? `已啟用：null DC 子載波＋兩側 guard band 為無效 CSI（熱圖呈死區、偵測自動排除）。可用子載波 ${ofdmMask(N_SUB).reduce((a,v)=>a+v,0)}/${N_SUB}。`
+                : "關閉＝所有子載波皆有效。真實 802.11 OFDM 的 DC/邊帶不可用。"}
+            </p>
+          </div>
+          {/* ── reproducibility: seed governs every stochastic term → same seed+config = identical capture ── */}
+          <div style={{...card,borderColor:SLATE}}>
+            <p style={{...lbl,color:SLATE}}>④d 實驗可重現性 · 隨機種子</p>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <input type="number" value={seed} onChange={e=>setSeed(Math.max(0,Math.floor(+e.target.value||0)))}
+                style={{width:96,padding:"5px 7px",fontSize:13,fontFamily:"inherit",border:`1px solid ${HAIR}`,borderRadius:3,color:INK,background:"white"}}/>
+              <button onClick={()=>setSeed(s=>((s*1664525+1013904223)>>>0)%100000)} style={{...btn(false),fontSize:11}}>換一個</button>
+            </div>
+            <p style={{margin:"7px 0 0",fontSize:10,color:GRAY,lineHeight:1.5}}>
+              種子固定＝AWGN／CFO抖動／擴散／AGC／封包遺失／STO 全部可重現。相同 seed＋設定會產生逐幀相同的合成擷取，
+              才能與真實 AX211 擷取一對一對比、或做消融時只變一個因子。
             </p>
           </div>
           <div style={{...card,borderColor:night?SLATE:HAIR}}>
@@ -995,12 +1134,25 @@ export default function CSIDigitalTwinPro(){
           {/* ── validation panel: sim estimate vs ground truth, exportable for real-data alignment ── */}
           {running&&valid&&(
             <div style={{...card,borderColor:HAIR}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,gap:6,flexWrap:"wrap"}}>
                 <p style={{...lbl,margin:0}}>⑧ 驗證比對（模擬 vs 真值）</p>
-                <button onClick={exportValidation} style={{padding:"4px 10px",fontSize:10,fontWeight:600,cursor:"pointer",
-                  fontFamily:"inherit",borderRadius:3,background:copied?GREEN:SLATE,color:"white",border:"none"}}>
-                  {copied?"✓ 已複製 CSV":"匯出 CSV"}
-                </button>
+                <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                  <button onClick={exportManifest} title="完整情境設定（可重現此模擬 / 對齊真實採集）"
+                    style={{padding:"4px 9px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:"inherit",borderRadius:3,
+                    background:copied==="manifest"?GREEN:SLATE,color:"white",border:"none"}}>
+                    {copied==="manifest"?"✓ 情境 JSON":"情境 JSON"}
+                  </button>
+                  <button onClick={exportCSIWindow} title="複數 CSI 視窗（CSIKit n_time×n_sub 格式，餵同一套估測管線）"
+                    style={{padding:"4px 9px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:"inherit",borderRadius:3,
+                    background:copied==="csi"?GREEN:(copied==="empty"?RED:SLATE),color:"white",border:"none"}}>
+                    {copied==="csi"?"✓ CSI CSV":copied==="empty"?"無資料":"CSI 視窗"}
+                  </button>
+                  <button onClick={exportValidation} title="指標摘要（複製到剪貼簿）"
+                    style={{padding:"4px 9px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:"inherit",borderRadius:3,
+                    background:copied==="csv"?GREEN:SLATE,color:"white",border:"none"}}>
+                    {copied==="csv"?"✓ 指標":"指標 CSV"}
+                  </button>
+                </div>
               </div>
               <div style={{display:"flex",gap:8}}>
                 <div style={{flex:1,textAlign:"center",padding:"6px 4px",background:"#F4F0EA",borderRadius:3}}>
@@ -1020,7 +1172,8 @@ export default function CSIDigitalTwinPro(){
                 </div>
               </div>
               <p style={{margin:"6px 0 0",fontSize:9.5,color:GRAY,lineHeight:1.4,fontStyle:"italic"}}>
-                模擬量測值，非真實資料。匯出指標欄位可與真實 AX211 擷取結果對齊（論文 Table I–IV 驗證用）。
+                模擬量測值，非真實資料。seed={seed} 下完全可重現。「情境 JSON」記錄可重建此模擬並對齊真實採集的完整設定；
+                「CSI 視窗」匯出複數 CSI（CSIKit n_time×n_sub），可餵入與真實 AX211 相同的估測管線量化 sim-to-real gap（論文 Table I–IV）。
               </p>
             </div>
           )}
@@ -1093,7 +1246,7 @@ export default function CSIDigitalTwinPro(){
 
       <div style={{marginTop:16,paddingTop:10,borderTop:`1px solid ${HAIR}`,fontSize:10,color:GRAY,display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:4}}>
         <span>DofLab · 國立勤益科技大學 · 智慧自動化工程系</span>
-        <span style={{fontStyle:"italic"}}>合成物理模型（MIMO·材質·地面反射·CFO/SFO/AGC/STO·封包遺失·熱漂移）· 僅供管線開發，非真實量測</span>
+        <span style={{fontStyle:"italic"}}>合成物理模型（MIMO·材質·地面反射·CFO/SFO/AGC/STO·封包遺失·熱漂移·OFDM null/guard·種子可重現）· 僅供管線開發，非真實量測</span>
       </div>
     </div>
   );

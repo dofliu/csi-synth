@@ -53,3 +53,6 @@ from .polygon import (
     PolygonRoom, rect_room, l_room, generate_polygon_csi,
 )
 from .polygon import partition_room, slanted_room
+
+# interactive digital-twin export loader (bridge to the same estimate pipeline)
+from .twin_import import load_twin_csi, resample_uniform
