@@ -1,0 +1,32 @@
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# ── Node / JS ──
+node_modules/
+dist/
+build/
+*.log
+
+# ── OS / editor junk ──
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# ── Third-party copyrighted reference papers (do NOT redistribute in a public repo) ──
+1-s2.0-S1877050921024509-main.pdf
+2307.12126v2.pdf
+International Journal of Antennas and Propagation*.pdf
+
+# ── session scratch / probes / helpers ──
+.__wtest
+_syncprobe*.txt
+push_to_github.ps1

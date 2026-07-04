@@ -1,0 +1,197 @@
+# WiFi CSI 睡眠呼吸中止居家偵測 — 專案文件與研究紀錄
+
+> **一句話定位**：用 Wi-Fi 6E（Intel AX211, 256 子載波）的高維 CSI，做**無接觸、免穿戴、匿名**的睡眠呼吸中止（含 OSA/CSA/低通氣）居家篩檢；核心創新是**姿態感知子載波選擇（PASS）**與**分層場域校準**，並以**物理數位孿生**在真實資料到位前驗證整條演算法管線。
+>
+> **本文件目的**：記錄整個研究與討論過程，讓你（或協作者、或未來的 Claude 對話）能快速接手。
+
+---
+
+## 0. 先回答你的問題：之後用 Claude Code 還是 Cowork？
+
+**建議：以 Claude Code 為主，Cowork 為輔。** 理由如下。
+
+這個專案的重心已經從「發想」轉成一個**真實的程式庫 + 即將到來的資料管線**：
+
+| 面向 | 適合的環境 | 原因 |
+|---|---|---|
+| `csi_synth` Python 套件（四層＋測試＋分析腳本） | **Claude Code** | 需要版本控制、反覆改碼、跑 pytest、迭代分析——這正是 Code 的主場 |
+| 互動數位孿生 `csi-digital-twin-pro.jsx` | **Claude Code** | 前端元件的除錯與擴充（例如上次的 `ORANGE` bug，在 IDE 裡即時編譯更快抓到） |
+| **下一階段：真實 AX211 資料採集與處理（E1–E5）** | **Claude Code** | 這是資料分析＋腳本管線，會產生大量檔案與 git commit，Code 最合適 |
+| 論文 `.docx` 隨資料更新迭代 | 兩者皆可 | Code 也能用 docx skill 產出；若一次大改敘事則 Cowork 較舒服 |
+| 簡報、計畫書、文獻綜述大改 | **Cowork** | 跨多份文件的長文寫作與研究綜合，Cowork 的多步驟工作流較順 |
+
+**具體建議做法**：
+1. 把 `csi_synth/` 解壓成一個 **git repo**（例如 `github.com/dofliu/csi-synth` 或併入既有 lab repo），之後所有模擬、分析、真實資料處理都在 **Claude Code** 裡進行。
+2. 論文與簡報的**大幅改寫**（例如拿到真實資料後重寫 Results、投稿前潤稿）用 **Cowork**，因為那是跨文件的長文任務。
+3. 兩者共用同一個 repo：Code 負責 code 與 data，Cowork 負責 docs 與 slides，檔案都在同一個工作區。
+
+一句話：**「碼與資料進 Code，文與圖進 Cowork」**。你現有的 MCP（filesystem、binary-writer、local-printer）在兩邊都能用。
+
+---
+
+## 1. 研究核心
+
+### 1.1 目標與臨床動機
+- 睡眠呼吸中止（OSA）全球約 **9.36 億**患者、約 **80% 未診斷**；黃金標準 PSG 整夜配戴、一床難求、$5,000+。
+- 目標：用家中既有 Wi-Fi 做**無接觸整夜篩檢**，偵測呼吸暫停與週期異常，達到可支援居家篩檢的臨床準確度。
+
+### 1.2 硬體與系統限制
+- **擷取**：Intel AX211（Wi-Fi 6E, 802.11ax；160MHz 最多 **256 子載波**、2 天線），Monitor 模式，用 **Ubuntu Live USB** 開機（避免影響 Windows 主系統）。
+- **分析**：Windows + **RTX 4080**，CSIKit + PyTorch。
+- **鐵律（學術誠信）**：**AI/模擬估計值絕不可當作真實實驗數據呈現**。所有合成結果只驗證相對趨勢，數字必須用真實 AX211 資料重新驗證。
+
+### 1.3 理論核心（本專案的推導鏈）
+1. **多路徑訊號模型**：`H(f_k) = Σ_p a_p · exp(−j2π f_k d_p / c)`，拆成靜態 `H_s`（房間指紋）＋動態 `H_d(t)`（人體呼吸散射）。
+2. **相位靈敏度**：`Δφ = 4π·Δd / λ`；呼吸胸腔起伏 2–6mm → @2.4GHz 約 0.2–0.6 rad（極微弱擾動）。
+3. **子載波靈敏度（理論核心）**：`S_k ≈ |H_d(f_k)| · |sin(∠H_s(f_k) − ∠H_d(f_k))|`
+   - 正交時最大、共線時歸零（＝Fresnel 盲點的解析來源）。
+   - `∠H_s` 隨路徑長度/幾何/擺位而變 → **敏感子載波集合是「場域相依」的**。
+   - 這一條式子同時解釋了：為何要高維 CSI（C1）、為何要場域校準（C4）、為何翻身要重選（C2）。
+4. **融合有效信噪比**：`SNR_eff ∝ (Σ_{k∈Ω} S_k)² / (M σ²)` → 高維與校準為何有效的量化根據。
+
+### 1.4 五大貢獻（C1–C5）
+- **C1** 首次系統評估 AX211 256 子載波 CSI 的生命徵象偵測增益。
+- **C2** 姿態感知子載波選擇（PASS）：翻身偵測 → 姿態指紋分類 → 動態重選敏感子載波。
+- **C3** 輕量雙任務模型（呼吸率迴歸＋呼吸中止分類，<1M 參數）：`L = α·L_reg(MAE) + β·L_cls(Focal)`。
+- **C4** 分層場域校準（通用底層求穩／場域校準求準／姿態自適應求續）＋與 PSG 臨床比對。
+- **C5** FeitCSI/IAX 擷取工具於 AX211 的訊號品質評比。
+
+### 1.5 通訊 vs 感測（重要教學洞察）
+手機在隔間能上網，卻不能辨識呼吸：**通訊只要「有訊號到得了」**（繞射/反射繞過隔間、夠解調、有重傳糾錯）；**感測要偵測「毫米級變化量」**（<1% 振幅擾動疊在強背景上）。繞過隔間的訊號沒掃過人體、不帶呼吸資訊；帶呼吸的路徑被擋掉了。比喻：通訊像隔牆聽見說話，感測像隔牆讀唇語。
+
+---
+
+## 2. `csi_synth` Python 套件（四層架構）
+
+> 交付於 `csi_synth.zip`。四層設計哲學：**乾淨物理核心 + 可選真實化/臨床/幾何層**。6 個核心測試全過（pytest）。
+
+### 2.1 乾淨核心 `csi_synth/`
+- `geometry.py`：Room / Node / Person，影像源法多路徑。
+- `generator.py`：`RadioConfig`（sample_rate 預設100）、`CSIResult`（.amplitude/.phase）、`generate_csi`、`C=299792458`。
+- `noise.py`：`NoiseConfig` / `apply_noise`。
+- `estimate.py`、`scenarios.py`、`tests/test_validation.py`。
+
+### 2.2 真實化層 `realism.py`（+ `realism_analysis.py`, `plot_realism.py`）
+- `RespirationModel`（生理呼吸：非正弦、I:E 比、週期/振幅變異）、`BodySegment`/`default_body`（胸/腹/雙臂延展多散射，`async_level` 模擬胸腹不同步）、`RealismConfig`、`generate_csi_realistic`。
+- **可報告結果**：真實度消融 → 理想化模型比全真實**樂觀約 14×**（20dB）；主導因子＝呼吸變異＋背景微動。圖：`realism_ablation_results.png`。
+
+### 2.3 臨床層 `clinical.py`（+ `clinical_analysis.py`, `plot_clinical.py`）
+- `SleepBreathingModel`（胸腹雙通道努力波形）、`ClinicalEvent`、`NORMAL/HYPOPNEA/APNEA_OSA/APNEA_CSA`、`generate_clinical_csi`、`ahi`。
+- 物理正確：正常/低通氣胸腹同步（正相關）、**OSA 胸腹矛盾運動（負相關 −0.94，有動作無氣流）**、CSA 完全停止。
+- **可報告結果**：naive 動作型偵測抓到 CSA（100%），**卻漏掉 OSA 與低通氣（0%）**——臨床主要兩類事件。圖：`clinical_scenario_results.png`。
+
+### 2.4 多邊形幾何層 `polygon.py`（+ `polygon_analysis.py`, `plot_polygon.py`, `plot_shapes.py`）
+- `PolygonRoom`（任意多邊形＋獨立內牆 `interior_walls`）、驗證過的射線追蹤（鏡射反射點須落在牆段上＋兩段路徑不被遮蔽，修正影像源法在凹房間的假路徑）、UTD 邊緣繞射（凹角＋自由內牆端點，`_on_outer_wall` 過濾貼牆端點）、`generate_polygon_csi`（含人體遮蔽 fallback 走繞射）。
+- 建構子：`rect_room`、`l_room`、`partition_room`（隔間＋門洞）、`slanted_room`（斜牆梯形）。
+- **可報告結果**：
+  - L 形覆蓋圖：矩形 97% vs L 形 89% 可用覆蓋，遮蔽區靠繞射微弱抵達（`polygon_coverage_results.png`）。
+  - 三形狀比較：矩形 95% / **隔間 3%（災難性遮蔽，只有門洞可感測）** / 斜牆 95%（不遮蔽但敏感子載波偏移，3/8 改變＝指紋改變）。圖：`shape_comparison_results.png`。
+  - 結論：**隔間考驗「訊號可達性」（遮蔽/繞射），斜牆考驗「該用哪些子載波」（校準）**。
+
+### 2.5 高維分集分析 `highdim_analysis.py`（+ `plot_highdim.py`）
+- 用指數功率延遲剖面（PDP，~5MHz 相干頻寬）建模，蒙地卡羅比較 5300 / ESP32 / AX211。
+- **誠實結論**：窄頻裝置對「找到一條敏感子載波」並非無望（best-of-K 0.96）；AX211 真正的優勢是 **~8× 獨立頻率分集**（27.6 vs 3.5 looks＝160MHz÷5MHz），餵給融合 SNR_eff 與魯棒性。圖：`highdim_results.png`。
+- ⚠️ 修正了原本簡報「256 才找得到敏感路徑」的不精確說法。
+
+### 2.6 場域校準 `site_calibration.py`（+ `plot_calibration.py`）
+- **可報告結果**：6dB SNR 下，通用子載波 MAE 2.11 → 場域專屬 0.47 BPM（接近 oracle 0.50，few-shot 恢復到 0.70）；環境改變後升到 1.68，重新校準恢復 0.47。圖：`site_calibration_results.png`。
+
+### 2.7 互動數位孿生 v2 真實化強化（`csi-digital-twin-pro.jsx`）
+
+在 v1（MIMO＋家具多路徑＋二階反射＋CFO/SFO/AGC＋I/Q 軌跡）之上，依「更真實地模擬真實環境與各種狀況，且模擬可在實驗中比對驗證」的需求，加入四大真實化方向 + 一個驗證面板。**全程守鐵律：面板標示「模擬量測值，非真實資料」。**
+
+1. **真實 CSI 採集缺陷層（④c toggle）** — sim→real 最大落差。封包遺失（~8%）造成**非均勻採樣缺口**、時戳抖動、**每子載波固定振幅校正偏移**（`makeCalib`，Intel CSI 特性）、**STO 每封包相位斜坡**。開啟後偵測明顯變難，逼近真實髒訊號。
+2. **整夜睡眠情境（⑤ toggle）** — 約 90 秒播完一整夜：`HYPNO` 睡眠分期（Wake/N1/N2/N3/REM）驅動呼吸率與變異、姿態轉換、事件叢集（REM/淺睡權重高），**CSA 以 Cheyne-Stokes 漸強漸弱包絡**。右側 hypnogram 條帶＋事件時間軸＋移動時鐘，並對比**真實 AHI vs 動作型偵測 AHI**——後者刻意低估 OSA/低通氣，直接對應 C4 臨床論點（動作型偵測漏 OSA）。
+3. **通道物理深化（④b）** — 四種邊界材質（乾牆/混凝土/玻璃/木質）改變反射係數與指紋陡度（`WALL_MAT`→`wallImages`）、**3D 地面反射**樓板彈跳（`floorPathLen`）、**環境熱漂移**使靜態通道緩慢起伏。
+4. **更多共存干擾（⑤b）** — 在原 5 種之上新增：寵物移動、空調 0.02Hz 週期起伏、同頻/流量突發封包遺失（與採集缺陷層連動 `lossBoost`）。
+5. **驗證比對面板（⑧）** — 即時累計**呼吸率 MAE**、**狀態正確率**、**封包遺失率**，一鍵**匯出 CSV**（含硬體/空間/材質/真實度/干擾/AHI 真值與動作型估計等欄位）→ 直接與真實 AX211 擷取結果對齊，**填論文 Table I–IV 的驗證骨架**。
+
+> 工程備忘：本 session 中「對既有檔案的即時編輯」無法同步到 Linux 測試沙箱（新建檔案可以），故 v2 以完整逐行審查驗證取代 esbuild（花括號/JSX 標籤配對、變數定義全數確認）。日後在 Claude Code 內開發時 esbuild 可正常運作。
+
+---
+
+## 3. 交付檔案清單（全部在 outputs/）
+
+### 3.1 程式與互動工具
+| 檔案 | 說明 |
+|---|---|
+| `csi_synth.zip` | 完整 Python 物理合成套件（四層＋分析＋測試＋圖） |
+| `csi-digital-twin-pro.jsx` | **主要**互動數位孿生（React）**v2**：硬體/空間/任務/真實度/失敗場景/校準/傳播視圖＋**通道材質·地面反射·熱漂移·真實CSI採集缺陷·整夜睡眠情境·驗證比對CSV匯出**（詳見 §2.7） |
+| `multipath-propagation-scope.html` | 獨立多路徑傳播示波器（可調速、L 形、繞射、通道脈衝響應時間軸） |
+| `csi_synth_demo.png` | 孿生四面板示意圖 |
+
+### 3.2 論文
+| 檔案 | 說明 |
+|---|---|
+| `WiFi_CSI_Sleep_Apnea_Paper_Draft.docx` | **英文 IEEE IoT-J 論文初稿**：7 節、22 篇真實文獻、5 條方程式、**6 張圖**（Fig.1 孿生面板待補、Fig.2 真實度消融、Fig.3 L形覆蓋、Fig.4 三形狀、Fig.5 場域校準、Fig.6 臨床事件）。Table I–IV 標紅色待真實 AX211 資料 |
+| `論文第二章_文獻探討.docx`、`論文第三章_場域校準小節.docx`、`論文後續章節規劃書.docx` | 中文章節素材 |
+
+### 3.3 簡報
+| 檔案 | 說明 |
+|---|---|
+| `WiFi_CSI_完整研究簡報.pptx` | **最完整**：32 張，願景＋**擴充理論(6張)**＋文獻＋實證＋貢獻＋方法＋應用＋路線（dof-podium） |
+| `WiFi_CSI_探索過程_教學簡報.pptx` | 11 張教學/演講版，探索過程敘事 |
+| `WiFi_CSI_研究提案簡報.pptx` | 20 張原始提案（活點地圖/白眼/凝 比喻） |
+| `WiFi_CSI_技術簡報.pptx` | 26 張早期技術簡報 |
+
+### 3.4 圖表（可重複用於論文/簡報）
+`realism_ablation_results.png`、`shape_comparison_results.png`、`polygon_coverage_results.png`、`site_calibration_results.png`、`clinical_scenario_results.png`、`highdim_results.png`
+
+---
+
+## 4. 探索過程與關鍵發現（研究敘事）
+
+這個 session 的核心價值在於**「發現問題 → 誠實面對限制 → 動手驗證」**的完整過程：
+
+1. **理想化模型會騙人** → 建真實化層，量化出理想化樂觀 14×。
+2. **房間形狀會遮蔽** → 建多邊形射線追蹤（修正影像源法凹房間假路徑＋加繞射），量化 L 形 97→89%、隔間 95→3%、斜牆指紋偏移。
+3. **跨場域要校準** → 場域校準模擬 2.11→0.47，並暴露脆弱性（需可重新校準）。
+4. **臨床現實會漏判** → 建臨床雙通道模型，證明動作型偵測漏掉 OSA/低通氣。
+5. **高維的真義是分集** → 用 S_k 頻譜分析，誠實修正為「~8× 獨立頻率分集」而非「找到唯一好子載波」。
+6. **傳播視覺化** → 互動工具把「空間多路徑 → 延遲擴散 → 頻率選擇性 → 頻寬分集」串成可視因果鏈，並統計發射/接收多路徑副本比。
+
+**共同精神**：模擬只驗證相對趨勢與邏輯，絕不當真實數據；失敗要誠實回報（訊號不足時說「無法辨識」而非硬猜）。
+
+---
+
+## 5. 環境慣例與技術細節（給接手者）
+
+- **pptx**：用 `pptx-jliu-style` skill（dof-podium 主題：BG=EEEDE9, INK=18191C, SLATE=5A6B7A；中文 Noto Serif TC、英文 EB Garamond；內文≥18–20pt；`defineSlideMaster` 母片；預設 footer「劉瑞弘 · 智慧自動化工程系 · 國立勤益科技大學 · DofLab」）。
+- **docx**：docx skill，US Letter 12240×15840，方程式用 TextRun subScript/superScript。
+- **JSX 陷阱**：箭頭函式 `return <tag/>` 之間要留空格；每次改動掃 `grep "return<"` 並用 esbuild 編譯。**注意**：esbuild 只抓語法錯誤，「變數未定義」（如先前 `ORANGE` 應為 `AMBER`）要到渲染該 UI 狀態才爆——改顏色/變數後要全檔交叉比對定義。
+- **調色盤（twin）**：`BG, PANEL, INK, GRAY, HAIR, SLATE, LINEN, RED, GREEN, AMBER`（沒有 ORANGE）。
+- **QA**：node 產生 → pandoc/markitdown 驗證 → soffice.py 轉 PDF → pdftoppm → 檢視。
+- **matplotlib 中文**：`fm.fontManager.addfont(NotoSansCJK)` + `plt.rcParams["font.family"]`。
+
+---
+
+## 6. 誠實的限制（務必記得）
+
+- 所有模擬數字都是**模型相對值**，非量測；投稿前必須用真實 AX211 資料重新驗證（論文 Table I–IV 仍標紅）。
+- 物理模型是**乾淨近似**，系統性**高估訊號品質**（真實 CSI 更髒）；真實化層縮小但未消除 sim-to-real gap。
+- UTD 繞射是**簡化係數**，捕捉定性行為非精確幅度；多邊形層是一階射線（單反射/單繞射）。
+- 互動孿生的臨床子類型偵測以**教學展示**為主；嚴謹量化在 Python 分析。
+
+---
+
+## 7. 下一步（建議優先序）
+
+1. **環境建置（W1–2）**：Ubuntu Live USB + AX211 Monitor 模式；FeitCSI/IAX 擷取驗證。→ **Claude Code**
+2. **真實資料採集（W3–7）**：空基線／仰臥呼吸／四姿態／翻身／插入呼吸中止；同步真值（呼吸帶，子集對 PSG）。
+3. **實驗 E1–E5**：E1 高維靈敏度、E2 工具評比、E3 PASS 消融、E4 雙任務對照、E5 跨場域。→ 填入論文 Table I–IV（取代紅色佔位）。
+4. **模型實作**：PASS 機制 + 雙任務 BiLSTM（<1M 參數）。
+5. **論文完稿投稿**：IEEE IoT-J（主場域）／IEEE Sensors Journal／ACM IMWUT。→ 大改用 **Cowork**。
+
+---
+
+## 8. 如何接續這個對話
+
+若要在新的 Claude 對話（Code 或 Cowork）接手，可以這樣開場：
+
+> 「我在做 WiFi CSI 睡眠呼吸中止居家偵測研究（AX211, 256 子載波, PASS + 場域校準 + 數位孿生）。附上專案文件與 `csi_synth.zip`。目前狀態：模擬管線與論文初稿完成，Table I–IV 待真實資料。我想接著做 [E1 高維靈敏度實驗 / PASS 實作 / 論文某節 …]。」
+
+把**這份文件 + `csi_synth.zip` + 論文 docx** 一起附上，新的對話就能無縫接手。
+
+---
+
+*本文件由 session 討論整理，記錄至此。核心資產：`csi_synth.zip`（程式）、`WiFi_CSI_Sleep_Apnea_Paper_Draft.docx`（論文）、`csi-digital-twin-pro.jsx`（互動孿生）、六張分析圖。*
