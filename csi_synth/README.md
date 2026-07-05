@@ -124,6 +124,27 @@ python demo_visualize.py    # 生成 csi_synth_demo.png（四面板圖）
 
 ---
 
+## 姿態感知子載波選擇 PASS（貢獻 C2）
+
+```python
+from csi_synth import (learn_posture_profiles, PASSTracker,
+                       detect_transitions, select_sensitive)
+
+# 1) 每姿態學一份 profile（乾淨校準）：指紋 + 敏感子載波
+profiles = learn_posture_profiles({posture: amp_windows, ...}, k=6)
+# 2) 線上：偵測翻身 → 分類姿態 → 重選子載波 → 估呼吸率
+turns = detect_transitions(amp, fs=20.0)
+tracker = PASSTracker(profiles=profiles, k=6)
+out = tracker.estimate(stable_window)     # {posture, subcarriers, bpm, snr_eff}
+```
+
+消融實驗：`python pass_analysis.py`（圖 `plot_pass.py` → `pass_results.png`）。誠實結論：
+翻身偵測 100%、姿態分類單天線 33%→雙天線 72%（單鏈路無法分左右側臥的鏡像對稱，
+AX211 第二天線打破它）、翻身門控把呼吸率 MAE 1.12→0.53；**子載波重選在單鏈路理想
+模型增益僅 ~3%（與高維分集結論一致），真正增益待真實 MIMO 驗證**。
+
+---
+
 ## 互動數位孿生的匯出橋接（twin_import）
 
 互動數位孿生 `csi-digital-twin-pro.jsx` 可匯出兩個檔案，用於和真實 AX211 一對一對比：
