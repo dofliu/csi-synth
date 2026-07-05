@@ -124,6 +124,16 @@ python demo_visualize.py    # 生成 csi_synth_demo.png（四面板圖）
 
 ---
 
+## 實驗 E1 / E5（可重現、有測試）
+
+- **E1 高維靈敏度** `python highdim_analysis.py`：蒙地卡羅比較 5300/ESP32/AX211，量化
+  AX211 的價值＝**~8× 獨立頻率分集 → 融合 SNR_eff 多 ≈+8.9 dB**（不是「找到唯一好子載波」）。
+- **E5 跨場域校準** `python site_calibration.py`：通用 2.11 → 場域專屬 0.47 BPM（近 oracle），
+  移動後退化、重新校準恢復——脆弱性與分層校準的量化。
+- 測試：`tests/test_highdim.py`、`tests/test_site_calibration.py` 鎖定科學排序。
+
+---
+
 ## 雙任務模型 C3：呼吸率迴歸 ＋ 呼吸事件分類
 
 ```python
