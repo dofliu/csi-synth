@@ -88,13 +88,15 @@
   - 三形狀比較：矩形 95% / **隔間 3%（災難性遮蔽，只有門洞可感測）** / 斜牆 95%（不遮蔽但敏感子載波偏移，3/8 改變＝指紋改變）。圖：`shape_comparison_results.png`。
   - 結論：**隔間考驗「訊號可達性」（遮蔽/繞射），斜牆考驗「該用哪些子載波」（校準）**。
 
-### 2.5 高維分集分析 `highdim_analysis.py`（+ `plot_highdim.py`）
+### 2.5 高維分集分析 `highdim_analysis.py`（+ `plot_highdim.py`）— **實驗 E1（已形式化）**
 - 用指數功率延遲剖面（PDP，~5MHz 相干頻寬）建模，蒙地卡羅比較 5300 / ESP32 / AX211。
 - **誠實結論**：窄頻裝置對「找到一條敏感子載波」並非無望（best-of-K 0.96）；AX211 真正的優勢是 **~8× 獨立頻率分集**（27.6 vs 3.5 looks＝160MHz÷5MHz），餵給融合 SNR_eff 與魯棒性。圖：`highdim_results.png`。
 - ⚠️ 修正了原本簡報「256 才找得到敏感路徑」的不精確說法。
+- **E1 形式化（本輪）**：加 `run_experiment()` 回傳結構化摘要＋**融合 SNR_eff 增益量化**：把獨立 looks 換算成 `10·log10(M)` dB 的分集/陣列增益上限——**AX211 比窄頻裝置多 ≈ +8.9 dB 融合 SNR_eff**，這是把「高維價值＝分集」講成可填 Table 的具體數字。測試 `tests/test_highdim.py` 鎖定排序（best-of-K 相近、AX211 獨立 looks >3× 且增益 >5dB、P(blind) 皆低）。
 
-### 2.6 場域校準 `site_calibration.py`（+ `plot_calibration.py`）
+### 2.6 場域校準 `site_calibration.py`（+ `plot_calibration.py`）— **實驗 E5（已形式化）**
 - **可報告結果**：6dB SNR 下，通用子載波 MAE 2.11 → 場域專屬 0.47 BPM（接近 oracle 0.50，few-shot 恢復到 0.70）；環境改變後升到 1.68，重新校準恢復 0.47。圖：`site_calibration_results.png`。
+- **E5 形式化（本輪）**：測試 `tests/test_site_calibration.py` 鎖定跨場域排序——場域專屬 < 通用（校準有效）且接近 oracle、few-shot 介於兩者、感測器移動使舊模型退化（脆弱性）、重新校準恢復。可重現、可填 Table。
 
 ### 2.7 互動數位孿生 v2 真實化強化（`csi-digital-twin-pro.jsx`）
 
@@ -220,7 +222,7 @@ v3 的核心動機來自需求的第二句：**「必須是之後實驗可以對
 
 1. **環境建置（W1–2）**：Ubuntu Live USB + AX211 Monitor 模式；FeitCSI/IAX 擷取驗證。→ **Claude Code**
 2. **真實資料採集（W3–7）**：空基線／仰臥呼吸／四姿態／翻身／插入呼吸中止；同步真值（呼吸帶，子集對 PSG）。
-3. **實驗 E1–E5**：E1 高維靈敏度、E2 工具評比、**E3 PASS 消融（合成原型已完成 → §2.9，`pass_analysis.py`）**、E4 雙任務對照、E5 跨場域。→ 填入論文 Table I–IV（取代紅色佔位）。
+3. **實驗 E1–E5**：**E1 高維靈敏度（合成已形式化＋測試 → §2.5）**、E2 工具評比、**E3 PASS 消融（合成原型已完成 → §2.9，`pass_analysis.py`）**、**E4 雙任務對照（合成原型已完成 → §2.10）**、**E5 跨場域（合成已形式化＋測試 → §2.6）**。→ 待真實 AX211 資料重跑後填入論文 Table I–IV（取代紅色佔位）。
 4. **模型實作**：**PASS 機制（合成原型已完成：偵測→分類→重選 `pass_select.py`；待真實 MIMO 驗證重選增益）** + **雙任務 BiLSTM（合成原型已完成 → §2.10，`dual_task_torch.py` 329k 參數＋NumPy 基線；待真實標註資料訓練）**。
 5. **論文完稿投稿**：IEEE IoT-J（主場域）／IEEE Sensors Journal／ACM IMWUT。→ 大改用 **Cowork**。
 

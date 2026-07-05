@@ -147,26 +147,68 @@ def run(n_geom=500, seed=0):
     return best, looks, blind, example, n_geom
 
 
-def main():
-    best, looks, blind, example, ng = run()
-    print("=" * 70)
-    print(" Does 256-subcarrier CSI find more sensitive paths?  (Monte-Carlo)")
-    print(f" {ng} random rich-multipath channels (exp. PDP, ~5 MHz coherence BW)")
-    print("=" * 70)
-    print(f"\n {'device':<14}{'best-of-K (rel. peak)':>24}{'independent looks':>20}{'P(blind)':>11}")
-    print(" " + "-"*66)
-    for name, n, bw in DEVICES:
-        b = np.mean(best[name]); u = np.mean(looks[name]); pb = blind[name]/ng*100
-        print(f" {name:<14}{b:>22.2f}  {u:>18.1f}{pb:>10.1f}%")
+# fusion of M independent sensitive looks gives up to 10·log10(M) dB of SNR_eff
+# gain (the diversity/array bound). This is where the wideband advantage cashes
+# out — not in merely finding one peak (best-of-K), but in how much independent
+# signal there is to fuse.
+def fusion_gain_db(n_looks):
+    return 10.0 * np.log10(max(n_looks, 1e-9))
+
+
+def run_experiment(n_geom=300, seed=0, verbose=False):
+    """
+    E1 high-dimensional sensitivity experiment. Returns a per-device summary dict:
+        {device: {best_of_k, independent_looks, p_blind, fusion_gain_db}}
+    plus the pairwise fusion-gain advantage of AX211 over the narrowband devices.
+    """
+    best, looks, blind, _example, ng = run(n_geom=n_geom, seed=seed)
+    summary = {}
+    for name, _n, _bw in DEVICES:
+        looks_m = float(np.mean(looks[name]))
+        summary[name] = dict(
+            best_of_k=float(np.mean(best[name])),
+            independent_looks=looks_m,
+            p_blind=blind[name] / ng,
+            fusion_gain_db=fusion_gain_db(looks_m),
+        )
+    ax = "AX211 (6E)"
+    summary["_ax211_fusion_advantage_db"] = {
+        name: summary[ax]["fusion_gain_db"] - summary[name]["fusion_gain_db"]
+        for name, _n, _bw in DEVICES if name != ax
+    }
+    summary["_n_geom"] = ng
+    if verbose:
+        _print_report(summary)
+    return summary
+
+
+def _print_report(s):
+    print("=" * 74)
+    print(" E1 · Does 256-subcarrier CSI find more sensitive paths?  (Monte-Carlo)")
+    print(f" {s['_n_geom']} random rich-multipath channels (exp. PDP, ~5 MHz coherence BW)")
+    print("=" * 74)
+    print(f"\n {'device':<14}{'best-of-K':>12}{'indep. looks':>15}{'P(blind)':>11}{'fusion gain':>14}")
+    print(" " + "-" * 71)
+    for name, _n, _bw in DEVICES:
+        d = s[name]
+        print(f" {name:<14}{d['best_of_k']:>12.2f}{d['independent_looks']:>15.1f}"
+              f"{d['p_blind']*100:>10.1f}%{d['fusion_gain_db']:>12.1f} dB")
+    adv = s["_ax211_fusion_advantage_db"]
+    print("\n AX211 fusion-SNR advantage: "
+          + ", ".join(f"+{adv[k]:.1f} dB vs {k}" for k in adv))
     print("\n Reading (honest):")
-    print("  * best-of-K: the narrowband devices usually DO find one decent")
-    print("    subcarrier (~0.9+) — a 20 MHz device is not hopeless at breathing.")
-    print("  * independent looks: AX211's 160 MHz spans ~8x more independent")
-    print("    frequency fades than a 20 MHz device, so it collects far more")
-    print("    independent sensitive subcarriers. THIS is the real high-dim gain:")
-    print("    it feeds SNR_eff (multi-subcarrier fusion) and robustness, not a")
-    print("    dramatic difference in merely finding one peak.")
-    return best, looks, blind, example
+    print("  * best-of-K: narrowband devices usually DO find one decent subcarrier")
+    print("    (~0.9+) — a 20 MHz device is not hopeless at breathing.")
+    print("  * independent looks / fusion gain: AX211's 160 MHz spans ~8x more")
+    print("    independent frequency fades, so fusing them yields several dB more")
+    print("    SNR_eff. THIS is the real high-dimensional gain (diversity/fusion +")
+    print("    robustness), not a dramatic edge in merely finding one peak.")
+    print("\n [synthetic — the ORDERING follows directly from sampling S(f);")
+    print("  absolute numbers need real-hardware confirmation]")
+
+
+def main():
+    run_experiment(verbose=True)
 
 
 if __name__ == "__main__":
