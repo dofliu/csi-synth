@@ -56,3 +56,10 @@ from .polygon import partition_room, slanted_room
 
 # interactive digital-twin export loader (bridge to the same estimate pipeline)
 from .twin_import import load_twin_csi, resample_uniform
+
+# posture-aware subcarrier selection (PASS, contribution C2)
+from .pass_select import (
+    select_sensitive, band_energy_per_subcarrier, estimate_rate_subs, fused_snr_eff,
+    detect_transitions, stable_segments, posture_fingerprint, classify_posture,
+    learn_posture_profiles, PostureProfile, PASSTracker,
+)
