@@ -63,3 +63,8 @@ from .pass_select import (
     detect_transitions, stable_segments, posture_fingerprint, classify_posture,
     learn_posture_profiles, PostureProfile, PASSTracker,
 )
+
+# dual-task vital-sign model (rate regression + event classification, C3)
+from .dual_task import (
+    make_dataset, window_features, motion_only_predict, DualTaskMLP, FEATURE_NAMES,
+)
