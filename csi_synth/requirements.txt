@@ -1,3 +1,6 @@
 numpy>=1.24
 scipy>=1.10
 matplotlib>=3.6
+# optional — only for the C3 BiLSTM reference (dual_task_torch.py); the NumPy
+# dual-task baseline and everything else run without it:
+# torch>=2.0

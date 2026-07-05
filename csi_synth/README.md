@@ -124,6 +124,24 @@ python demo_visualize.py    # 生成 csi_synth_demo.png（四面板圖）
 
 ---
 
+## 雙任務模型 C3：呼吸率迴歸 ＋ 呼吸事件分類
+
+```python
+from csi_synth import make_dataset, DualTaskMLP
+ds = make_dataset(per_class=110)          # 24s 視窗（12s 基線→12s 事件），4 類事件
+m = DualTaskMLP().fit(ds["X_feat"][tr], ds["y_rate"][tr], ds["y_event"][tr])
+rate_bpm, event = m.predict(ds["X_feat"][te])
+```
+
+消融：`python dual_task_analysis.py`（圖 `plot_dual_task.py` → `dual_task_results.png`）。
+結果：呼吸率 MAE ≈1.4 BPM、事件 4 類 77%／事件-vs-正常 95%；**雙任務救回動作型偵測漏掉
+的低通氣（70% vs 3%）與 OSA（70% vs 0%）**。OSA 最難（單鏈路振幅看不到胸腹矛盾，需相位/MIMO）。
+
+論文的 **<1M 參數 BiLSTM**（focal loss、~329k 參數）在 `dual_task_torch.py`（需 torch，
+給 RTX 4080）；純 NumPy 的 `DualTaskMLP` 是沙箱可跑的基線，兩者共用同一套資料。
+
+---
+
 ## 姿態感知子載波選擇 PASS（貢獻 C2）
 
 ```python
