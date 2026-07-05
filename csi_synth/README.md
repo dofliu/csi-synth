@@ -124,11 +124,37 @@ python demo_visualize.py    # 生成 csi_synth_demo.png（四面板圖）
 
 ---
 
+## 互動數位孿生的匯出橋接（twin_import）
+
+互動數位孿生 `csi-digital-twin-pro.jsx` 可匯出兩個檔案，用於和真實 AX211 一對一對比：
+
+- **CSI 視窗 CSV**：`t_s, I0..I{N-1}, Q0..Q{N-1}`（每列一封包，複數 CSI 帶有所有模擬損傷；
+  版面同 CSIKit `(n_time, n_subcarriers)`）。
+- **情境 JSON manifest**：完整設定＋真值＋ PRNG 種子（可重現，可據以佈置相符的真實擷取）。
+
+用同一套估測管線把它讀回來：
+
+```python
+from csi_synth import load_twin_csi, resample_uniform, estimate_rate
+
+res = load_twin_csi("csi_bedroom_breathe_seed12345_240f.csv",
+                    "twin_bedroom_breathe_seed12345.json")
+uniform = resample_uniform(res)                 # 真實 CSI 非均勻採樣，先補到均勻格點
+est = estimate_rate(uniform, band=(0.1, 0.6))
+print(est["bpm"], "vs truth", res.label["ground_truth"])
+```
+
+或直接：`python -m csi_synth.twin_import <csi.csv> [manifest.json]`
+
+> 孿生的隨機種子固定後，整段合成擷取逐幀可重現——這是「模擬可與真實實驗對比驗證」的前提。
+
+---
+
 ## 下一步：接上真實硬體
 
 當 AX211 開始輸出真實 CSI 後：
 1. 用 CSIKit 解析真實 `.bin` → 同樣的 `(n_time, n_subcarriers)` 複數陣列
-2. 把真實資料接到同一套 `estimate_rate` / 前處理管線
+2. 把真實資料接到同一套 `estimate_rate` / 前處理管線（孿生匯出走 `load_twin_csi` 進同一管線）
 3. 比較合成 vs 真實的差距，量化 Sim-to-Real Gap
 4. 用真實資料重新訓練與驗證模型
 

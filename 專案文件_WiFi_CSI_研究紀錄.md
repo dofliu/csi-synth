@@ -108,6 +108,20 @@
 
 > 工程備忘：本 session 中「對既有檔案的即時編輯」無法同步到 Linux 測試沙箱（新建檔案可以），故 v2 以完整逐行審查驗證取代 esbuild（花括號/JSX 標籤配對、變數定義全數確認）。日後在 Claude Code 內開發時 esbuild 可正常運作。
 
+### 2.8 互動數位孿生 v3：可重現性 + 複數 CSI 匯出（實驗對比橋接）
+
+v3 的核心動機來自需求的第二句：**「必須是之後實驗可以對比驗證的」**。v2 已有豐富物理真實度，但有兩個致命缺口讓它「無法與真實實驗對比」：**(1) 不可重現**（所有 AWGN/CFO抖動/擴散/AGC/封包遺失/STO 都用 `Math.random()`，每次跑都不同，無法重跑同一次合成擷取去對齊真實擷取）；**(2) 只匯出小小的指標 CSV**，沒有匯出真正的複數 CSI 或設定快照，因此和 CSIKit `(n_time, n_subcarriers)` 管線（Table I–IV 要用的）之間沒有實際橋樑。v3 補上這兩點，並加了幾項真實情境：
+
+1. **種子可重現（④d）** — 以 `mulberry32(seed)` 流式 PRNG 取代所有 `Math.random()`。**相同 seed＋設定＝逐幀完全相同的合成擷取**。這是「實驗可對比」的前提：才能(a)重跑同一次模擬去對齊真實 AX211 擷取、(b)做消融時只變一個因子而其餘雜訊完全固定。UI 有種子輸入框＋「換一個」。
+2. **複數 CSI 匯出（⑧「CSI 視窗」按鈕）** — 緩衝觀測天線的複數 CSI，以 **CSIKit `(n_time × n_subcarrier)` 版面**匯出 CSV：欄位 `t_s, I0..I{N-1}, Q0..Q{N-1}`。**匯出的 I/Q 帶有上游所有損傷**（AWGN/CFO/SFO/AGC/STO/每子載波校正/封包遺失缺口/null-guard 死區），時戳為真實的抖動/遺失時戳。→ 可餵入與真實 AX211 **同一套** `estimate_rate`／前處理管線，直接量化 sim-to-real gap。
+3. **情境 JSON 匯出（⑧「情境 JSON」按鈕）** — 完整設定快照（schema `csi-digital-twin/manifest@1`）：seed、radio（含 OFDM 可用子載波數）、幾何（Tx/Rx/各天線/人/家具座標）、材質/地面/熱漂移、任務/干擾/呼吸真值/整夜 hypnogram 與事件排程、即時量測指標。→ 可**重建此模擬**，也可據以**佈置一個條件相符的真實擷取**做一對一比較。
+4. **AX211 子載波結構（④c）** — `ofdmMask`：null DC 子載波＋兩側 guard band 為無效 CSI（熱圖呈死區、偵測與校準自動排除、匯出為零）。256→231 可用（接近 AX211 實際可用數）。讓匯出的 CSI 與熱圖符合真實擷取結構。
+5. **更真實的生理／情境** — 心跳改為獨立頻帶（~1.0–1.3Hz + HRV）的 `realHeart`（呼吸帶與心跳帶可分辨，驗證雙頻帶估測）；新增**週期性肢動 PLMD**（每~30s 抽動一次的非呼吸週期源）與**棉被遮蔽**（人體散射 ×0.55，測靈敏度下降）。
+
+**Python 端橋接（`csi_synth/twin_import.py`）**：`load_twin_csi(csv, manifest)` 把孿生匯出的 CSV+JSON 重建成 `CSIResult`（複數 `(n_time, n_sub)`、非均勻時戳、真值標籤），`resample_uniform` 補到均勻格點；於是**同一套 `estimate_rate` 同時跑孿生輸出與（未來的）真實擷取**。round-trip 測試（`tests/test_twin_import.py`）證明：即使 8% 封包遺失＋時戳抖動，仍還原呼吸率誤差 <1 BPM。全套 8 個測試通過。
+
+> **這一段就是「模擬 → 實驗對比驗證」的具體實作**：孿生產生帶標籤的合成 CSI（可重現、CSIKit 格式），真實 AX211 產生同格式 CSI，兩者過同一管線 → 差距即 sim-to-real gap，填論文 Table I–IV。
+
 ---
 
 ## 3. 交付檔案清單（全部在 outputs/）
