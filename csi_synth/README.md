@@ -124,6 +124,16 @@ python demo_visualize.py    # 生成 csi_synth_demo.png（四面板圖）
 
 ---
 
+## 統一基準測試（Benchmark · 詳見 `BENCHMARK.md`）
+
+- **Python 矩陣** `python benchmark.py`：掃描 硬體×SNR×姿態×真實度，記錄呼吸率 MAE ＋ 偵測率。
+  頭條結果——**偵測門檻 ESP32 12dB → AX210 8dB → AX211 4dB**（寬頻偵測更深入雜訊）；
+  sim-to-real：理想 94% → 物理真實層 43% 偵測率。圖 `benchmark_results.png`、資料 `benchmark_results.csv`。
+- **孿生 UI 佐證** `node tools/twin_ui_bench.mjs`：headless 驅動介面，6 情境畫面偵測 6/6 合理。
+- 測試 `tests/test_benchmark.py`。
+
+---
+
 ## 實驗 E1 / E5（可重現、有測試）
 
 - **E1 高維靈敏度** `python highdim_analysis.py`：蒙地卡羅比較 5300/ESP32/AX211，量化

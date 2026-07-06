@@ -1,0 +1,7 @@
+scenario,hardware,task,realism,interference,detected,expected_ok
+breathe_clean,Intel AX211,靜止呼吸,標準,無干擾,呼吸偵測,YES
+empty,Intel AX211,空間淨空,標準,無干擾,空間淨空,YES
+apnea,Intel AX211,呼吸中止,標準,無干擾,呼吸偵測,YES
+walk,Intel AX211,走路移動,標準,無干擾,移動 / 走路,YES
+interf_emi,Intel AX211,靜止呼吸,標準,電磁干擾,訊號被干擾,YES
+esp32_harsh,ESP32-S3,靜止呼吸,嚴苛,無干擾,靜止（有人）,YES
