@@ -124,6 +124,30 @@ python demo_visualize.py    # 生成 csi_synth_demo.png（四面板圖）
 
 ---
 
+## 真實 CSI 資料管線（CSIKit → 同一套估測）
+
+把真實擷取的 CSI 接進**與合成資料完全相同**的估測管線,sim 與 real 過同一套 → 差距即
+sim-to-real gap（填論文 Table I–IV）。
+
+```
+擷取檔  ──CSIKit──▶  CSIData  ──realdata──▶  CSIResult  ──▶  estimate_rate（同 sim）
+```
+
+```python
+from csi_synth import load_real_csi        # 需在分析機安裝: pip install csikit
+res = load_real_csi("capture.dat")         # 自動辨識 FeitCSI(AX211)/IWL/Nexmon/ESP32/CSV
+print(estimate_rate(res, band=(0.1,0.6))["bpm"])
+```
+
+- **`realdata.py`**:`load_real_csi`／`load_streams`（每天線一路,供 MIMO/PASS）／`csidata_to_result`。
+  CSIKit 的 `FeitCSIBeamformReader` 正是本專案 AX211 擷取工具(FeitCSI/IAX)的格式。
+- **`sim_to_real.py`**:把 real 與 twin 匯出的 sim 過同一管線並列比較 → sim-to-real gap 報表。
+  `python sim_to_real.py capture.dat --truth-bpm 15 [--sim-csi twin.csv --sim-manifest twin.json]`
+- CSIKit 為**選用相依**(拉 pandas/scikit-learn);測試 `tests/test_realdata.py` 在有 CSIKit 時執行。
+- ⚠️ 估測用**振幅**(穩健);真實 Intel/AX **相位需 sanitize** 才能做相位法,已在 label 標記。
+
+---
+
 ## 統一基準測試（Benchmark · 詳見 `BENCHMARK.md`）
 
 - **Python 矩陣** `python benchmark.py`：掃描 硬體×SNR×姿態×真實度，記錄呼吸率 MAE ＋ 偵測率。

@@ -68,3 +68,6 @@ from .pass_select import (
 from .dual_task import (
     make_dataset, window_features, motion_only_predict, DualTaskMLP, FEATURE_NAMES,
 )
+
+# real-capture loader (CSIKit → same CSIResult pipeline; CSIKit is optional)
+from .realdata import load_real_csi, load_streams, csidata_to_result
