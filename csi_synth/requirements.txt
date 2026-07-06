@@ -4,3 +4,6 @@ matplotlib>=3.6
 # optional — only for the C3 BiLSTM reference (dual_task_torch.py); the NumPy
 # dual-task baseline and everything else run without it:
 # torch>=2.0
+# optional — only for reading REAL capture files (realdata.py / sim_to_real.py);
+# pulls pandas/scikit-learn. Install on the analysis machine:
+# csikit>=2.5

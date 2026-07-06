@@ -165,6 +165,18 @@ v3 的核心動機來自需求的第二句：**「必須是之後實驗可以對
 
 > 全套測試 **22 passed + 1 skipped**。這一節就是「設計測試 → 記錄 → 產生結果」的具體交付，等真實 AX211 資料進來，同一套基準直接重跑填 Table I–IV。
 
+### 2.12 真實 CSI 資料處理管線 `realdata.py` ＋ `sim_to_real.py`（sim→real 橋接）
+
+把真實擷取的 CSI 接進**與合成資料完全相同**的估測管線。流程：`擷取檔 ──CSIKit──▶ CSIData ──realdata──▶ CSIResult ──▶ estimate_rate（同 sim）`。
+
+- **`realdata.py`**：`load_real_csi(path)` 用 CSIKit `get_reader` 自動辨識格式並讀成 canonical 複數 `(n_time, n_sub)` ＋時戳的 `CSIResult`。CSIKit 內建 **`FeitCSIBeamformReader`——正是本專案 AX211 擷取工具（FeitCSI/IAX）的格式**；也支援 IWL5300/Nexmon/ESP32/CSV。`load_streams` 每 Rx 天線一路（AX211→2，供 MIMO/PASS）。
+- **`sim_to_real.py`**：`evaluate()`／`compare()` 把 real 與 twin 匯出的 sim 過**同一管線**並列比較（呼吸率、誤差、融合 SNR_eff、偵測旗標、非均勻採樣），印出 sim-to-real gap 報表——這是把「合成預測」變成「真實量測」的具體 Table I–IV 填法。
+- **CSIKit 為選用相依**（拉 pandas/scikit-learn），核心保持輕量；`realdata.py` 惰性 import。
+- **誠實**：估測用**振幅**（穩健）；真實 Intel/AX **相位需 sanitize**（CFO/SFO/PDD）才能做相位法，已在 `label.phase_raw_uncalibrated` 標記。真實 CSI 非均勻採樣，`sample_rate` 由時戳推得，必要時 `resample_uniform`。
+- **測試 `tests/test_realdata.py`**：手上還沒有真實 AX211 檔，故用**與每個 CSIKit reader 相同結構的 mock CSIData**（帶已知呼吸調變）跑 round-trip，證明「real→CSIResult→estimate_rate」還原呼吸率 <1 BPM；檔案格式細節由 CSIKit 負責、待真實檔到位驗證。CI 新增 `test-optional` job 安裝 torch＋csikit 實跑這些測試。全套 **25 passed + 1 skipped**。
+
+> 這一節就是「CSIKit 解析 → 同一套管線 → 填 Table」的骨架。**唯一還缺的是真實資料本身**——採到就 `load_real_csi` 進來、`sim_to_real` 比對，紅字 Table I–IV 就能換成真實量測。
+
 ---
 
 ## 3. 交付檔案清單（全部在 outputs/）
@@ -234,7 +246,7 @@ v3 的核心動機來自需求的第二句：**「必須是之後實驗可以對
 ## 7. 下一步（建議優先序）
 
 1. **環境建置（W1–2）**：Ubuntu Live USB + AX211 Monitor 模式；FeitCSI/IAX 擷取驗證。→ **Claude Code**
-2. **真實資料採集（W3–7）**：空基線／仰臥呼吸／四姿態／翻身／插入呼吸中止；同步真值（呼吸帶，子集對 PSG）。
+2. **真實資料採集（W3–7）**：空基線／仰臥呼吸／四姿態／翻身／插入呼吸中止；同步真值（呼吸帶，子集對 PSG）。→ **管線已就緒（§2.12 `load_real_csi`／`sim_to_real`），採到即可接入**。
 3. **實驗 E1–E5**：**E1 高維靈敏度（合成已形式化＋測試 → §2.5）**、E2 工具評比、**E3 PASS 消融（合成原型已完成 → §2.9，`pass_analysis.py`）**、**E4 雙任務對照（合成原型已完成 → §2.10）**、**E5 跨場域（合成已形式化＋測試 → §2.6）**。→ 待真實 AX211 資料重跑後填入論文 Table I–IV（取代紅色佔位）。
 4. **模型實作**：**PASS 機制（合成原型已完成：偵測→分類→重選 `pass_select.py`；待真實 MIMO 驗證重選增益）** + **雙任務 BiLSTM（合成原型已完成 → §2.10，`dual_task_torch.py` 329k 參數＋NumPy 基線；待真實標註資料訓練）**。
 5. **論文完稿投稿**：IEEE IoT-J（主場域）／IEEE Sensors Journal／ACM IMWUT。→ 大改用 **Cowork**。
