@@ -4,6 +4,8 @@
 >
 > **本文件目的**：記錄整個研究與討論過程，讓你（或協作者、或未來的 Claude 對話）能快速接手。
 
+> **📍 目前狀態（2026-07）**：合成端管線**全部完成**——數位孿生 v3（可重現＋複數CSI匯出）、E1 高維靈敏度、C2 PASS、C3 雙任務模型、E5 跨場域校準、統一基準測試、CI、**真實資料管線骨架**都已實作、測試、合併 GitHub `main`（PR #1–#8）。**下一步唯一的關卡：採集真實 AX211 資料**，接入既有的 `load_real_csi`/`sim_to_real` 管線即可填論文 Table I–IV。詳見 §7。
+
 ---
 
 ## 0. 先回答你的問題：之後用 Claude Code 還是 Cowork？
@@ -179,13 +181,32 @@ v3 的核心動機來自需求的第二句：**「必須是之後實驗可以對
 
 ---
 
-## 3. 交付檔案清單（全部在 outputs/）
+## 3. 交付檔案清單
 
-### 3.1 程式與互動工具
+> ⚠️ **本節前段（3.1 起源說明）為專案早期（`outputs/` 交付、`csi_synth.zip`）的歷史紀錄，保留供脈絡參考。
+> 專案現已是 GitHub repo（`dofliu/csi-synth`），所有程式以 git 版本控管、每個功能都經 PR＋CI 驗證後合併 `main`。
+> **目前實際的程式結構請見本文件開頭的「專案結構」對照，或直接看 repo 根目錄的 `README.md`。**
+
+### 3.0 現行 repo 結構速覽（git，取代下方 3.1 的 zip 交付方式）
+| 路徑 | 內容 |
+|---|---|
+| `csi_synth/csi_synth/` | 核心套件：四層物理（`generator`/`noise`/`realism`/`clinical`/`polygon`）＋`pass_select`(C2)＋`dual_task`(C3)＋`twin_import`/`realdata`(sim↔real 橋接) |
+| `csi_synth/*_analysis.py` ＋ `plot_*.py` | E1/E5/C2/C3 各實驗腳本＋統一基準 `benchmark.py`＋對應圖 |
+| `csi_synth/sim_to_real.py` | real vs sim 同管線比較，sim-to-real gap 報表 |
+| `csi_synth/dual_task_torch.py` | C3 的 <1M 參數 BiLSTM（PyTorch，選用相依） |
+| `csi_synth/tests/`（26 測試）＋ `csi_synth/tools/twin_ui_bench.mjs` | pytest 測試套件 ＋ headless 孿生 UI 端到端佐證 |
+| `csi_synth/BENCHMARK.md` | 統一基準測試報告 |
+| `.github/workflows/ci.yml` | CI（pytest 矩陣＋torch/CSIKit job） |
+| `csi-digital-twin-pro.jsx` | 互動數位孿生 **v3**（詳見 §2.7、§2.8） |
+| `README.md`（repo 根目錄） | 專案總覽、快速開始、目前狀態表 |
+
+歷次 PR：#1 孿生 v3 → #2 PASS(C2) → #3 雙任務(C3) → #4 CI → #5 E1/E5 → #6 統一基準 → #7 孿生誤報修正 → #8 真實資料管線。全數已合併 `main`。
+
+### 3.1 早期交付檔案（歷史紀錄，非現行結構）
 | 檔案 | 說明 |
 |---|---|
-| `csi_synth.zip` | 完整 Python 物理合成套件（四層＋分析＋測試＋圖） |
-| `csi-digital-twin-pro.jsx` | **主要**互動數位孿生（React）**v2**：硬體/空間/任務/真實度/失敗場景/校準/傳播視圖＋**通道材質·地面反射·熱漂移·真實CSI採集缺陷·整夜睡眠情境·驗證比對CSV匯出**（詳見 §2.7） |
+| `csi_synth.zip` | （已被 git repo 取代）完整 Python 物理合成套件（四層＋分析＋測試＋圖） |
+| `csi-digital-twin-pro.jsx` | **主要**互動數位孿生（React）**v2**：硬體/空間/任務/真實度/失敗場景/校準/傳播視圖＋**通道材質·地面反射·熱漂移·真實CSI採集缺陷·整夜睡眠情境·驗證比對CSV匯出**（詳見 §2.7；現已升級至 **v3**，見 §2.8） |
 | `multipath-propagation-scope.html` | 獨立多路徑傳播示波器（可調速、L 形、繞射、通道脈衝響應時間軸） |
 | `csi_synth_demo.png` | 孿生四面板示意圖 |
 
@@ -243,24 +264,26 @@ v3 的核心動機來自需求的第二句：**「必須是之後實驗可以對
 
 ---
 
-## 7. 下一步（建議優先序）
+## 7. 下一步（建議優先序 · 2026-07 更新）
 
-1. **環境建置（W1–2）**：Ubuntu Live USB + AX211 Monitor 模式；FeitCSI/IAX 擷取驗證。→ **Claude Code**
-2. **真實資料採集（W3–7）**：空基線／仰臥呼吸／四姿態／翻身／插入呼吸中止；同步真值（呼吸帶，子集對 PSG）。→ **管線已就緒（§2.12 `load_real_csi`／`sim_to_real`），採到即可接入**。
-3. **實驗 E1–E5**：**E1 高維靈敏度（合成已形式化＋測試 → §2.5）**、E2 工具評比、**E3 PASS 消融（合成原型已完成 → §2.9，`pass_analysis.py`）**、**E4 雙任務對照（合成原型已完成 → §2.10）**、**E5 跨場域（合成已形式化＋測試 → §2.6）**。→ 待真實 AX211 資料重跑後填入論文 Table I–IV（取代紅色佔位）。
-4. **模型實作**：**PASS 機制（合成原型已完成：偵測→分類→重選 `pass_select.py`；待真實 MIMO 驗證重選增益）** + **雙任務 BiLSTM（合成原型已完成 → §2.10，`dual_task_torch.py` 329k 參數＋NumPy 基線；待真實標註資料訓練）**。
-5. **論文完稿投稿**：IEEE IoT-J（主場域）／IEEE Sensors Journal／ACM IMWUT。→ 大改用 **Cowork**。
+**合成端全部完成**：數位孿生 v3、E1/E5、C2 PASS、C3 雙任務、統一基準測試、CI、真實資料管線骨架 —— 全數已實作、測試、合併 `main`（PR #1–#8）。**剩下唯一的關卡是真實資料本身**：
+
+1. ~~環境建置、PASS/雙任務模型實作~~ ✅ **已完成**（合成原型 + 骨架就緒，見 §2.9、§2.10、§2.12）。
+2. **真實資料採集（現在最優先）**：Ubuntu Live USB + AX211 Monitor 模式，FeitCSI/IAX 擷取驗證 → 空基線／仰臥呼吸／四姿態／翻身／插入呼吸中止，同步真值（呼吸帶，子集對 PSG）。**管線已就緒**：採到檔案後 `from csi_synth import load_real_csi` 直接接入，或 `python sim_to_real.py capture.dat --truth-bpm N` 產出對比報表。→ **Claude Code**
+3. **實驗 E1–E5 真實資料重跑**：合成側排序與量化都已就緒（E1 §2.5、E3 PASS §2.9、E4 雙任務 §2.10、E5 §2.6），真實資料到位後**同一套腳本**重跑即可填論文 Table I–IV（取代紅色佔位）。**E2 工具評比**（FeitCSI vs IAX 訊號品質）待真實擷取才能開始，目前尚無合成側骨架。
+4. **模型用真實資料重新訓練**：PASS 的子載波重選增益（合成側僅 ~3%，預期真實 MIMO 更大）、雙任務 BiLSTM（`dual_task_torch.py`，329k 參數）都需要真實標註資料重新驗證/訓練，不能只用合成權重。
+5. **論文完稿投稿**：真實資料結果填入 Table I–IV 後，IEEE IoT-J（主場域）／IEEE Sensors Journal／ACM IMWUT。→ 大改用 **Cowork**。
 
 ---
 
 ## 8. 如何接續這個對話
 
-若要在新的 Claude 對話（Code 或 Cowork）接手，可以這樣開場：
+專案已是 **git repo**（`dofliu/csi-synth`，GitHub），不再用 zip 交付。新對話接手時：
 
-> 「我在做 WiFi CSI 睡眠呼吸中止居家偵測研究（AX211, 256 子載波, PASS + 場域校準 + 數位孿生）。附上專案文件與 `csi_synth.zip`。目前狀態：模擬管線與論文初稿完成，Table I–IV 待真實資料。我想接著做 [E1 高維靈敏度實驗 / PASS 實作 / 論文某節 …]。」
+> 「我在做 WiFi CSI 睡眠呼吸中止居家偵測研究（AX211, 256 子載波, PASS + 場域校準 + 數位孿生），repo 在 github.com/dofliu/csi-synth。合成端管線（孿生 v3、E1/E3/E4/E5、統一基準、CI、真實資料橋接）都已完成並在 main，見 `README.md` 與 `專案文件_WiFi_CSI_研究紀錄.md`。目前在等真實 AX211 資料；我想接著做 [真實資料處理 / 論文某節 / E2 工具評比骨架 …]。」
 
-把**這份文件 + `csi_synth.zip` + 論文 docx** 一起附上，新的對話就能無縫接手。
+只要在 Claude Code 中把 repo 加入 session（或本來就在此 repo），就能直接讀 `README.md`（總覽）與本文件（完整脈絡）接手；不需要再附 zip。
 
 ---
 
-*本文件由 session 討論整理，記錄至此。核心資產：`csi_synth.zip`（程式）、`WiFi_CSI_Sleep_Apnea_Paper_Draft.docx`（論文）、`csi-digital-twin-pro.jsx`（互動孿生）、六張分析圖。*
+*本文件持續由開發過程更新。核心資產：`dofliu/csi-synth`（GitHub repo，程式＋測試＋CI）、`WiFi_CSI_Sleep_Apnea_Paper_Draft.docx`（論文）、`csi-digital-twin-pro.jsx`（互動孿生 v3）、`csi_synth/BENCHMARK.md`（統一基準報告）、各實驗分析圖。最後更新：2026-07（PR #8 合併，真實資料管線就緒）。*
