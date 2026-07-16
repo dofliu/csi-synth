@@ -21,7 +21,8 @@
 | 統一基準測試（硬體 × SNR × 姿態 × 真實度） | ✅ 完成 |
 | CI（pytest 矩陣 × Python 3.10–3.12 ＋ torch ＋ CSIKit） | ✅ 完成 |
 | **真實 CSI 資料管線**（CSIKit → 與合成相同的估測管線） | ✅ 骨架就緒，**待真實 AX211 資料接入** |
-| E2 擷取工具評比、論文 Table I–IV | 🔜 待真實資料 |
+| **實驗協定**（情境分類/檔名/manifest/錄製檢查清單，見 `csi_synth/EXPERIMENT_PROTOCOL.md`） | ✅ 完成 |
+| E2 擷取工具評比、論文 Table I–IV | 🔜 待照協定採集真實資料 |
 
 ## 專案結構
 
@@ -35,6 +36,8 @@
 | `csi_synth/tools/twin_ui_bench.mjs` | headless 驅動孿生 UI，端到端佐證 Python 基準結果 |
 | `csi-digital-twin-pro.jsx` | 互動數位孿生 **v3**（React）：MIMO · 材質多路徑 · 地面反射 · 硬體損傷 · 真實 CSI 採集缺陷 · OFDM 子載波結構 · 整夜睡眠情境 · **種子可重現** · **複數 CSI／情境 JSON 匯出** |
 | `csi_synth/BENCHMARK.md` | 統一基準測試報告（偵測門檻、sim-to-real 落差、UI 佐證） |
+| `csi_synth/EXPERIMENT_PROTOCOL.md` | **真實資料採集實驗協定**：情境分類、檔名/manifest 規範、錄製檢查清單、如何接進 `load_real_csi`/`sim_to_real.py` |
+| `AX211_CSI_建置SOP.docx` | 硬體/軟體環境建置 SOP（Live USB＋FeitCSI，到「看到熱圖」為止；正式錄製請接續看上面的 `EXPERIMENT_PROTOCOL.md`） |
 | `.github/workflows/ci.yml` | CI：pytest 矩陣（3.10–3.12）＋ 選用相依（torch／CSIKit）job |
 | `WiFi_CSI_Sleep_Apnea_Paper_Draft.docx` | 英文 IEEE IoT-J 論文初稿（Table I–IV 待真實資料） |
 | `WiFi_CSI_*.pptx` | 研究簡報（提案／完整／教學版） |

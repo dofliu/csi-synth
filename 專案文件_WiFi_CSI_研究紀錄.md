@@ -4,7 +4,7 @@
 >
 > **本文件目的**：記錄整個研究與討論過程，讓你（或協作者、或未來的 Claude 對話）能快速接手。
 
-> **📍 目前狀態（2026-07）**：合成端管線**全部完成**——數位孿生 v3（可重現＋複數CSI匯出）、E1 高維靈敏度、C2 PASS、C3 雙任務模型、E5 跨場域校準、統一基準測試、CI、**真實資料管線骨架**都已實作、測試、合併 GitHub `main`（PR #1–#8）。**下一步唯一的關卡：採集真實 AX211 資料**，接入既有的 `load_real_csi`/`sim_to_real` 管線即可填論文 Table I–IV。詳見 §7。
+> **📍 目前狀態（2026-07）**：合成端管線**全部完成**——數位孿生 v3（可重現＋複數CSI匯出）、E1 高維靈敏度、C2 PASS、C3 雙任務模型、E5 跨場域校準、統一基準測試、CI、**真實資料管線骨架**都已實作、測試、合併 GitHub `main`（PR #1–#9）。**下一步唯一的關卡：照 `csi_synth/EXPERIMENT_PROTOCOL.md` 採集真實 AX211 資料**，接入既有的 `load_real_csi`/`sim_to_real` 管線即可填論文 Table I–IV。詳見 §7。
 
 ---
 
@@ -179,6 +179,20 @@ v3 的核心動機來自需求的第二句：**「必須是之後實驗可以對
 
 > 這一節就是「CSIKit 解析 → 同一套管線 → 填 Table」的骨架。**唯一還缺的是真實資料本身**——採到就 `load_real_csi` 進來、`sim_to_real` 比對，紅字 Table I–IV 就能換成真實量測。
 
+### 2.13 真實資料採集實驗協定 `csi_synth/EXPERIMENT_PROTOCOL.md`
+
+§2.12 把「真實資料進來後怎麼跑」的管線做完了，但**「怎麼錄出一份能用的真實資料」**一直沒有文件化——`AX211_CSI_建置SOP.docx` 只到「Live USB + FeitCSI 環境跑通、看到熱圖」為止，§7 的情境清單也只是一句話等級。這個缺口在實際案例中暴露出來：一份學生自行測試的截圖，因為沒記錄硬體/頻寬（子載波數對不上已知設定）、沒記錄當下動作（無法判斷畫面尖峰是走路還是干擾），事後完全無法拿來對比或填 Table。
+
+`EXPERIMENT_PROTOCOL.md` 補上這段，內容全部**對齊既有程式碼的 taxonomy，不自創新名詞**：
+
+1. **情境分類表**：直接用 `csi_synth.scenarios` 的 `scenario_key`（`baseline`／`normal-supine`／`posture-{4}`／`transition`／`apnea-event`）與 `clinical.py` 的事件子型（`hypopnea`／`apnea-osa`／`apnea-csa`），每個情境附建議錄製時長（依 DFT 解析度需求 ≥10–16s、臨床可計分事件 ≥10s，皆有程式碼依據）、對應論文 Table。
+2. **檔名與資料夾規範**：`<scenario_key>__<hw>__<timestamp>`，`<hw>` 強制含頻寬（因為子載波數看熱圖猜不出來）。
+3. **Manifest JSON schema**：欄位對齊孿生的 `csi-digital-twin/manifest@1` 與 `load_real_csi`/`sim_to_real.py` 的參數，事後串接零轉換；`events` 時間軸格式對齊 `clinical.ClinicalEvent(kind, start, duration)`。
+4. **錄製操作檢查清單**：硬體/頻寬先確認、事件當場記錄開始/結束秒數、錄完立刻填 manifest、錄完當場跑一次 `load_real_csi` 核對子載波數是否合理。
+5. **常見陷阱**（直接來自真實案例排查）：OFDM null 子載波的平坦水平帶（正常）、單 frame 滿刻度垂直尖峰（疑似採集缺陷，非事件時對照 `session.log`）、全頻段同步暴衝（動作而非呼吸）、子載波數與硬體設定不符。
+
+> 這一節填的是「協定」缺口，跟 §2.12 的「管線」缺口合起來，才是完整的「錄製 → 標記 → 接入 → 填 Table」路徑。
+
 ---
 
 ## 3. 交付檔案清單
@@ -269,7 +283,7 @@ v3 的核心動機來自需求的第二句：**「必須是之後實驗可以對
 **合成端全部完成**：數位孿生 v3、E1/E5、C2 PASS、C3 雙任務、統一基準測試、CI、真實資料管線骨架 —— 全數已實作、測試、合併 `main`（PR #1–#8）。**剩下唯一的關卡是真實資料本身**：
 
 1. ~~環境建置、PASS/雙任務模型實作~~ ✅ **已完成**（合成原型 + 骨架就緒，見 §2.9、§2.10、§2.12）。
-2. **真實資料採集（現在最優先）**：Ubuntu Live USB + AX211 Monitor 模式，FeitCSI/IAX 擷取驗證 → 空基線／仰臥呼吸／四姿態／翻身／插入呼吸中止，同步真值（呼吸帶，子集對 PSG）。**管線已就緒**：採到檔案後 `from csi_synth import load_real_csi` 直接接入，或 `python sim_to_real.py capture.dat --truth-bpm N` 產出對比報表。→ **Claude Code**
+2. **真實資料採集（現在最優先）**：Ubuntu Live USB + AX211 Monitor 模式，FeitCSI/IAX 擷取驗證（`AX211_CSI_建置SOP.docx`）→ **照 `csi_synth/EXPERIMENT_PROTOCOL.md` 的情境分類表、檔名/manifest 規範、錄製檢查清單**採集空基線／仰臥呼吸／四姿態／翻身／插入呼吸中止（含 hypopnea/OSA/CSA 三亞型），同步真值。**管線已就緒**：採到檔案後 `from csi_synth import load_real_csi` 直接接入，或 `python sim_to_real.py capture.dat --truth-bpm N` 產出對比報表。→ **Claude Code**
 3. **實驗 E1–E5 真實資料重跑**：合成側排序與量化都已就緒（E1 §2.5、E3 PASS §2.9、E4 雙任務 §2.10、E5 §2.6），真實資料到位後**同一套腳本**重跑即可填論文 Table I–IV（取代紅色佔位）。**E2 工具評比**（FeitCSI vs IAX 訊號品質）待真實擷取才能開始，目前尚無合成側骨架。
 4. **模型用真實資料重新訓練**：PASS 的子載波重選增益（合成側僅 ~3%，預期真實 MIMO 更大）、雙任務 BiLSTM（`dual_task_torch.py`，329k 參數）都需要真實標註資料重新驗證/訓練，不能只用合成權重。
 5. **論文完稿投稿**：真實資料結果填入 Table I–IV 後，IEEE IoT-J（主場域）／IEEE Sensors Journal／ACM IMWUT。→ 大改用 **Cowork**。
