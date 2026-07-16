@@ -186,12 +186,13 @@ v3 的核心動機來自需求的第二句：**「必須是之後實驗可以對
 `EXPERIMENT_PROTOCOL.md` 補上這段，內容全部**對齊既有程式碼的 taxonomy，不自創新名詞**：
 
 1. **情境分類表**：直接用 `csi_synth.scenarios` 的 `scenario_key`（`baseline`／`normal-supine`／`posture-{4}`／`transition`／`apnea-event`）與 `clinical.py` 的事件子型（`hypopnea`／`apnea-osa`／`apnea-csa`），每個情境附建議錄製時長（依 DFT 解析度需求 ≥10–16s、臨床可計分事件 ≥10s，皆有程式碼依據）、對應論文 Table。
-2. **檔名與資料夾規範**：`<scenario_key>__<hw>__<timestamp>`，`<hw>` 強制含頻寬（因為子載波數看熱圖猜不出來）。
-3. **Manifest JSON schema**：欄位對齊孿生的 `csi-digital-twin/manifest@1` 與 `load_real_csi`/`sim_to_real.py` 的參數，事後串接零轉換；`events` 時間軸格式對齊 `clinical.ClinicalEvent(kind, start, duration)`。
-4. **錄製操作檢查清單**：硬體/頻寬先確認、事件當場記錄開始/結束秒數、錄完立刻填 manifest、錄完當場跑一次 `load_real_csi` 核對子載波數是否合理。
-5. **常見陷阱**（直接來自真實案例排查）：OFDM null 子載波的平坦水平帶（正常）、單 frame 滿刻度垂直尖峰（疑似採集缺陷，非事件時對照 `session.log`）、全頻段同步暴衝（動作而非呼吸）、子載波數與硬體設定不符。
+2. **空間環境紀錄**：房間尺寸、Tx/Rx/人座標、牆材質——欄位名稱**逐一對齊孿生匯出的 `geometry` 區塊**（`width_m`/`depth_m`/`tx_m`/`rx_m`/`rx_antennas_m`/`person_m`/`wall_material`/`furniture`），量測精度只需捲尺 ±5cm。這節直接回應「真實房間要不要記尺寸/配置」的提問：**要，而且缺了它 E5 跨場域校準與 C2/PASS 的真實資料都無法回填**，因為兩者都依賴房間幾何決定的子載波敏感度分布。
+3. **檔名與資料夾規範**：`<scenario_key>__<hw>__<timestamp>`，`<hw>` 強制含頻寬（因為子載波數看熱圖猜不出來）。
+4. **Manifest JSON schema**：含 §2 的 `geometry` 區塊，其餘欄位對齊孿生的 `csi-digital-twin/manifest@1` 與 `load_real_csi`/`sim_to_real.py` 的參數，事後串接零轉換；`events` 時間軸格式對齊 `clinical.ClinicalEvent(kind, start, duration)`。
+5. **錄製操作檢查清單**：硬體/頻寬先確認、房間與 Tx/Rx/人座標量測並記錄、事件當場記錄開始/結束秒數、錄完立刻填 manifest、錄完當場跑一次 `load_real_csi` 核對子載波數是否合理。
+6. **常見陷阱**（直接來自真實案例排查）：OFDM null 子載波的平坦水平帶（正常）、單 frame 滿刻度垂直尖峰（疑似採集缺陷，非事件時對照 `session.log`）、全頻段同步暴衝（動作而非呼吸）、子載波數與硬體設定不符、沒記房間幾何導致事後無法回接合成資料。
 
-> 這一節填的是「協定」缺口，跟 §2.12 的「管線」缺口合起來，才是完整的「錄製 → 標記 → 接入 → 填 Table」路徑。
+> 這一節填的是「協定」缺口，跟 §2.12 的「管線」缺口合起來，才是完整的「錄製（含空間配置）→ 標記 → 接入 → 填 Table」路徑。
 
 ---
 
