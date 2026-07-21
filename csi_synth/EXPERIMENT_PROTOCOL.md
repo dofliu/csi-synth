@@ -184,6 +184,14 @@ print(res.csi.shape)          # 核對是否等於 manifest 的 n_subcarriers_ex
 print(estimate_rate(res, band=(0.1, 0.6))["bpm"])
 ```
 
+`load_real_csi` 會自動辨識檔案格式：`.bin`／CSIKit 支援的格式（FeitCSI/AX211、IWL、Nexmon）
+走 CSIKit；若是 `Timestamp,Sub_0..Sub_N` 這種每列一個封包、逐子載波振幅的 CSV（目前學生端
+ESP32-CSI-tool 匯出的實際格式），會自動改走內建的 `load_amplitude_csv`，不需要裝 CSIKit，也
+不會有相位資訊（`label["phase_available"] is False`，`estimate_rate`／PASS 用振幅一樣可跑）。
+`sample_rate` 一律從時間戳量測，**不要假設任何固定值**——目前量到的 ESP32 實測擷取率約
+6 Hz，遠低於本專案模擬端預設的 20 Hz，若程式其他地方（例如自寫的分析腳本）沒有把量到的
+`res.config.sample_rate` 帶進 `pass_select` 系列函式，頻率估計會整批錯誤且不會報錯，务必留意。
+
 或直接產出 sim-to-real 對比報表：
 
 ```bash
@@ -223,6 +231,17 @@ python sim_to_real.py <real.bin> --truth-bpm 15 \
 - **沒記房間幾何，事後想比對合成資料卻做不到**：見 §2——這是本文件新增的一節，正是為了避免
   這個狀況。已經錄好但沒記幾何的舊資料，至少事後補記「房間類型＋大約尺寸＋人相對 Tx/Rx 哪一側」，
   好過完全沒有。
+- **`load_real_csi` 讀學生端 CSV 沒報錯，但 `res.csi.shape` 是 0 或內容全錯**：這是已修好的真實
+  案例——CSIKit 的 `get_reader()` 不認得 `Timestamp,Sub_0..Sub_N` 這種振幅 CSV，會誤判成 Intel
+  binary 格式，印一堆 `Invalid code for beamforming measurement` 然後回傳 0 frame（不會丟
+  exception，很容易被忽略）。`load_real_csi` 現在會先檢查檔頭是否符合這個 CSV schema，符合就直接
+  走內建解析器，不會誤入 CSIKit；如果自己另外寫腳本繞過 `load_real_csi` 直接呼叫 CSIKit，記得先
+  用 `csi_synth.realdata._looks_like_amplitude_csv()` 判斷檔案格式。
+- **空房間／無人録製也量到「呼吸率」**：`estimate_rate` 只要頻譜在呼吸頻段有峰值就會回報一個
+  BPM 數字，不會自己判斷房間到底有沒有人。用 `fused_snr_eff` 搭配 §2 的空間紀錄一起看：目前在
+  ESP32 實測空房間資料上量到的 `fused_snr_eff` 落在 1.5–2 附近（噪聲層級），明顯低於有人走動時
+  段（約 4，但那多半是動作洩漏到呼吸頻段而非真的呼吸訊號）；在還沒有一段「有人平躺、安靜、
+  有 ground-truth 呼吸率」的錄製之前，不要把任何一段的 `estimate_rate` 輸出當成呼吸率真值。
 
 ---
 
