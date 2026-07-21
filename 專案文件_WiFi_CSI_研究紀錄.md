@@ -194,6 +194,45 @@ v3 的核心動機來自需求的第二句：**「必須是之後實驗可以對
 
 > 這一節填的是「協定」缺口，跟 §2.12 的「管線」缺口合起來，才是完整的「錄製（含空間配置）→ 標記 → 接入 → 填 Table」路徑。
 
+### 2.14 首批真實資料抵達：`realdata.py` CSV schema 修正 ＋ 初步分析（2026-07-21）
+
+學生第一批真實擷取檔案送到（3 份 ESP32 CSV：兩份空房間 `clean_room`、一份「坐著滑手機→走動」的
+`in_room`），這是整個 sim→real 橋接工作第一次接上真實資料，同時也**戳破了一個 §2.12 沒發現的
+盲點**：
+
+- **`load_real_csi` 對真實檔案靜默失敗**：學生端實際輸出的格式是「`Timestamp,Sub_0..Sub_N` 每列
+  一個封包、逐子載波振幅」的 CSV（無相位），不是 §2.12 設計時假設的 CSIKit 二進位格式。CSIKit 的
+  `get_reader()` 認不出這個 schema，會誤判成 Intel binary、印一串 `Invalid code for beamforming
+  measurement`、最後回傳 **0 frame**——不丟例外，非常容易被忽略。修正：`realdata.py` 新增
+  `_looks_like_amplitude_csv()`（檔頭偵測）與 `load_amplitude_csv()`（原生 CSV 解析器，`csv`/`re`/
+  `datetime` 標準庫實作，不需要 CSIKit），`load_real_csi()` 先檢查 schema 再決定要不要碰 CSIKit。
+  對照真實檔案驗證：`(3578, 52)` shape、正確讀出振幅、無錯誤輸出。新增 4 個測試（不需要 CSIKit，
+  跑在基本 CI job）：schema 偵測、null band 與呼吸率還原、`load_real_csi` 自動路由、`HH:MM:SS`
+  時戳解析（含跨午夜進位）。全套 **29 passed + 1 skipped**。
+- **採樣率必須量測，不能假設**：三份檔案時戳量出來的實際擷取率約 **6.1 Hz**，遠低於本專案模擬端
+  與 `pass_select`/`dual_task`/`benchmark` 各處預設的 `FS = 20.0`。這次分析全程把 `res.config.
+  sample_rate` 明確傳進每個 `pass_select` 函式呼叫，`load_amplitude_csv` 的 docstring 也把這點
+  標成「絕不假設」的誠實提醒——這正是那種會讓頻率估計整批安靜錯掉、卻不會報錯的錯誤類型。
+- **子載波數＋null band 反推硬體**：52 子載波、subcarrier 23–31（9 個）固定全零的 guard/null band，
+  符合 ESP32-CSI-tool 的 HT20 慣例（而非本專案主要目標的 AX211/256 子載波）——與學生房間照片
+  （堆滿雜物的儲藏／工具間，非臥室，金屬置物櫃是強反射體）一起看，這批資料的定位是「先把管線
+  和偵測器在真實硬體上跑通」，還不是可拿來填 Table I–IV 的 `normal-supine` 計分錄製。
+- **拿專案自己的 PASS 偵測器（純合成資料調校）直接跑真實資料**：`detect_transitions` 在
+  `in_room`（走動）檔案裡準確抓到一段連續動作事件（約 310–380 秒），與截圖上目視標記的走動區間
+  吻合——這是偵測器第一次在真實資料上得到正向驗證。同一顆偵測器套在兩份「空房間」檔案上，分別把
+  **5.9% 與 9.0%** 的時間標成「動作」——空房間理論上不該有這麼高比例，這是一個誠實且有價值的
+  發現：目前的偵測閾值是純合成雜訊調校出來的，套到真實硬體/場域後需要重新校準，直接對應 C4
+  （場域校準）要補的下一步，而且是第一次有真實資料佐證這個需求。
+- **`fused_snr_eff`**：空房間兩份約 1.5–2.1（接近雜訊層級），走動檔案約 4.0（但多半是動作能量
+  洩漏到呼吸頻段，不是真的呼吸訊號）。三份檔案都沒有「有人平躺安靜、有 ground-truth 呼吸率」的
+  區段，所以這次沒有、也不該宣稱驗證了呼吸率偵測準確度——`EXPERIMENT_PROTOCOL.md` §7 新增一條
+  陷阱提醒，避免把任意一段的 `estimate_rate` 輸出誤當真值。
+
+> 這一節是「管線＋協定」理論完備後，第一次真的接上真實資料時暴露出的落差——證實了 §2.12 結尾
+> 「唯一還缺的是真實資料本身」這句話背後還藏著一個沒測過的假設（CSIKit 認得學生端的真實格式）。
+> 現在缺口已補：`load_real_csi` 對兩種真實格式都能用，下一批 `normal-supine` 計分錄製到位後可以
+> 直接接 `sim_to_real.py` 填 Table I–IV。
+
 ---
 
 ## 3. 交付檔案清單
@@ -209,13 +248,15 @@ v3 的核心動機來自需求的第二句：**「必須是之後實驗可以對
 | `csi_synth/*_analysis.py` ＋ `plot_*.py` | E1/E5/C2/C3 各實驗腳本＋統一基準 `benchmark.py`＋對應圖 |
 | `csi_synth/sim_to_real.py` | real vs sim 同管線比較，sim-to-real gap 報表 |
 | `csi_synth/dual_task_torch.py` | C3 的 <1M 參數 BiLSTM（PyTorch，選用相依） |
-| `csi_synth/tests/`（26 測試）＋ `csi_synth/tools/twin_ui_bench.mjs` | pytest 測試套件 ＋ headless 孿生 UI 端到端佐證 |
+| `csi_synth/tests/`（30 測試）＋ `csi_synth/tools/twin_ui_bench.mjs` | pytest 測試套件 ＋ headless 孿生 UI 端到端佐證 |
 | `csi_synth/BENCHMARK.md` | 統一基準測試報告 |
 | `.github/workflows/ci.yml` | CI（pytest 矩陣＋torch/CSIKit job） |
 | `csi-digital-twin-pro.jsx` | 互動數位孿生 **v3**（詳見 §2.7、§2.8） |
 | `README.md`（repo 根目錄） | 專案總覽、快速開始、目前狀態表 |
 
-歷次 PR：#1 孿生 v3 → #2 PASS(C2) → #3 雙任務(C3) → #4 CI → #5 E1/E5 → #6 統一基準 → #7 孿生誤報修正 → #8 真實資料管線。全數已合併 `main`。
+歷次 PR：#1 孿生 v3 → #2 PASS(C2) → #3 雙任務(C3) → #4 CI → #5 E1/E5 → #6 統一基準 → #7 孿生誤報修正 →
+#8 真實資料管線 → #9 文件更新(README/研究紀錄) → #10 真實資料採集實驗協定 → #11 真實資料 CSV
+schema 修正＋首批分析（§2.14）。全數已合併 `main`。
 
 ### 3.1 早期交付檔案（歷史紀錄，非現行結構）
 | 檔案 | 說明 |
@@ -281,13 +322,14 @@ v3 的核心動機來自需求的第二句：**「必須是之後實驗可以對
 
 ## 7. 下一步（建議優先序 · 2026-07 更新）
 
-**合成端全部完成**：數位孿生 v3、E1/E5、C2 PASS、C3 雙任務、統一基準測試、CI、真實資料管線骨架 —— 全數已實作、測試、合併 `main`（PR #1–#8）。**剩下唯一的關卡是真實資料本身**：
+**合成端全部完成**：數位孿生 v3、E1/E5、C2 PASS、C3 雙任務、統一基準測試、CI、真實資料管線骨架 —— 全數已實作、測試、合併 `main`（PR #1–#8）。**第一批真實資料已抵達並接上管線**（§2.14，PR #11），但還不是可計分的 `normal-supine` 錄製，剩下的關卡是**採到能填 Table 的真實資料**：
 
 1. ~~環境建置、PASS/雙任務模型實作~~ ✅ **已完成**（合成原型 + 骨架就緒，見 §2.9、§2.10、§2.12）。
-2. **真實資料採集（現在最優先）**：Ubuntu Live USB + AX211 Monitor 模式，FeitCSI/IAX 擷取驗證（`AX211_CSI_建置SOP.docx`）→ **照 `csi_synth/EXPERIMENT_PROTOCOL.md` 的情境分類表、檔名/manifest 規範、錄製檢查清單**採集空基線／仰臥呼吸／四姿態／翻身／插入呼吸中止（含 hypopnea/OSA/CSA 三亞型），同步真值。**管線已就緒**：採到檔案後 `from csi_synth import load_real_csi` 直接接入，或 `python sim_to_real.py capture.dat --truth-bpm N` 產出對比報表。→ **Claude Code**
-3. **實驗 E1–E5 真實資料重跑**：合成側排序與量化都已就緒（E1 §2.5、E3 PASS §2.9、E4 雙任務 §2.10、E5 §2.6），真實資料到位後**同一套腳本**重跑即可填論文 Table I–IV（取代紅色佔位）。**E2 工具評比**（FeitCSI vs IAX 訊號品質）待真實擷取才能開始，目前尚無合成側骨架。
-4. **模型用真實資料重新訓練**：PASS 的子載波重選增益（合成側僅 ~3%，預期真實 MIMO 更大）、雙任務 BiLSTM（`dual_task_torch.py`，329k 參數）都需要真實標註資料重新驗證/訓練，不能只用合成權重。
-5. **論文完稿投稿**：真實資料結果填入 Table I–IV 後，IEEE IoT-J（主場域）／IEEE Sensors Journal／ACM IMWUT。→ 大改用 **Cowork**。
+2. ~~真實資料管線骨架 + 首批格式驗證~~ ✅ **已完成**（§2.12 骨架 + §2.14 CSV schema 修正與空房間/走動資料初步分析；PASS 偵測器在真實走動資料上首次得到正向驗證，同時暴露空房間 5.9–9.0% 誤報率，待場域校準）。
+3. **真實資料採集（現在最優先）**：需要的是**可計分的 `normal-supine`／四姿態／翻身／呼吸中止**錄製，不只是空房間或動作測試——照 `csi_synth/EXPERIMENT_PROTOCOL.md` 的情境分類表、檔名/manifest 規範（含 §2 空間幾何）、錄製檢查清單採集，同步真值。**管線已對兩種真實格式就緒**（CSIKit 二進位 ＋ 學生端振幅 CSV）：採到檔案後 `from csi_synth import load_real_csi` 直接接入，或 `python sim_to_real.py capture.csv --truth-bpm N` 產出對比報表。→ **Claude Code**
+4. **實驗 E1–E5 真實資料重跑**：合成側排序與量化都已就緒（E1 §2.5、E3 PASS §2.9、E4 雙任務 §2.10、E5 §2.6），真實資料到位後**同一套腳本**重跑即可填論文 Table I–IV（取代紅色佔位）。**E2 工具評比**（FeitCSI vs IAX 訊號品質）待真實擷取才能開始，目前尚無合成側骨架。
+5. **模型用真實資料重新訓練**：PASS 的子載波重選增益（合成側僅 ~3%，預期真實 MIMO 更大）、雙任務 BiLSTM（`dual_task_torch.py`，329k 參數）都需要真實標註資料重新驗證/訓練，不能只用合成權重；PASS 偵測閾值（`detect_transitions`）也需要用真實空房間資料重新校準（§2.14 發現的誤報率）。
+6. **論文完稿投稿**：真實資料結果填入 Table I–IV 後，IEEE IoT-J（主場域）／IEEE Sensors Journal／ACM IMWUT。→ 大改用 **Cowork**。
 
 ---
 

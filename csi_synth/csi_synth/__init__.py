@@ -70,4 +70,4 @@ from .dual_task import (
 )
 
 # real-capture loader (CSIKit → same CSIResult pipeline; CSIKit is optional)
-from .realdata import load_real_csi, load_streams, csidata_to_result
+from .realdata import load_real_csi, load_streams, csidata_to_result, load_amplitude_csv
