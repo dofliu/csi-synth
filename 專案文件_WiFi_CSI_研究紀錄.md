@@ -228,6 +228,20 @@ v3 的核心動機來自需求的第二句：**「必須是之後實驗可以對
   區段，所以這次沒有、也不該宣稱驗證了呼吸率偵測準確度——`EXPERIMENT_PROTOCOL.md` §7 新增一條
   陷阱提醒，避免把任意一段的 `estimate_rate` 輸出誤當真值。
 
+**資料與圖表**（PR #12，全部存在 [`csi_synth/real_data/first_batch_20260721/`](csi_synth/real_data/first_batch_20260721/)）：
+
+| 圖 | 內容 | 連結 |
+|---|---|---|
+| 圖1 | 三份資料振幅熱圖（null band＋走動事件結構重組一眼可見） | [`figs/fig1_overview.png`](csi_synth/real_data/first_batch_20260721/figs/fig1_overview.png) |
+| 圖2 | 採樣率診斷（實測 6.1 Hz vs 預設 20 Hz vs 呼吸 Nyquist 1.2 Hz） | [`figs/fig2_sample_rate.png`](csi_synth/real_data/first_batch_20260721/figs/fig2_sample_rate.png) |
+| 圖3 | 動作偵測時間軸（走動正確抓到／空房間 5.9%–9.0% 誤報） | [`figs/fig3_motion.png`](csi_synth/real_data/first_batch_20260721/figs/fig3_motion.png) |
+| 圖4 | 閾值校準掃描＋呼吸頻段 SNR（回答「誤報能否靠學習改善」） | [`figs/fig4_calibration.png`](csi_synth/real_data/first_batch_20260721/figs/fig4_calibration.png) |
+
+- **三份原始 CSV** ＋ 逐檔數據表：[`README.md`](csi_synth/real_data/first_batch_20260721/README.md)
+- **可重現分析腳本**（只用專案自己的 `load_real_csi`/`pass_select`）：[`analyze_first_batch.py`](csi_synth/real_data/first_batch_20260721/analyze_first_batch.py)
+  　→ `cd csi_synth && PYTHONPATH=. python real_data/first_batch_20260721/analyze_first_batch.py`
+- **給學生的一頁反饋單**（A4 PDF，關鍵發現＋下一次錄製檢查清單）：[`feedback_20260721.pdf`](csi_synth/real_data/first_batch_20260721/feedback_20260721.pdf)
+
 > 這一節是「管線＋協定」理論完備後，第一次真的接上真實資料時暴露出的落差——證實了 §2.12 結尾
 > 「唯一還缺的是真實資料本身」這句話背後還藏著一個沒測過的假設（CSIKit 認得學生端的真實格式）。
 > 現在缺口已補：`load_real_csi` 對兩種真實格式都能用，下一批 `normal-supine` 計分錄製到位後可以
@@ -256,7 +270,7 @@ v3 的核心動機來自需求的第二句：**「必須是之後實驗可以對
 
 歷次 PR：#1 孿生 v3 → #2 PASS(C2) → #3 雙任務(C3) → #4 CI → #5 E1/E5 → #6 統一基準 → #7 孿生誤報修正 →
 #8 真實資料管線 → #9 文件更新(README/研究紀錄) → #10 真實資料採集實驗協定 → #11 真實資料 CSV
-schema 修正＋首批分析（§2.14）。全數已合併 `main`。
+schema 修正＋首批分析（§2.14）→ #12 首批真實資料＋四張分析圖＋學生一頁 PDF 反饋單。全數已合併 `main`。
 
 ### 3.1 早期交付檔案（歷史紀錄，非現行結構）
 | 檔案 | 說明 |
