@@ -1,0 +1,47 @@
+{
+  "schema": "csi-real-capture/manifest@1",
+  "batch": "second_batch_20260722",
+  "site": "new-bedroom-like room (bed, desk, cabinet, curtain, AC)",
+  "hardware": {
+    "tx": "N300 router",
+    "rx": "ESP32 (ESP32-CSI-tool)",
+    "bandwidth": "HT20",
+    "n_subcarriers": 52,
+    "null_guard_band": [23, 24, 25, 26, 27, 28, 29, 30, 31]
+  },
+  "geometry": {
+    "units": "cm",
+    "origin": "bottom-left floor corner",
+    "width_x_cm": 365.0,
+    "depth_y_cm": 325.0,
+    "height_z_cm": 305.0,
+    "rx_cm": [35, 105, 80],
+    "tx_cm": [277, 45, 180],
+    "los_3d_cm": 268.6,
+    "person_cm": [155, 205, null],
+    "person_note": "seated in desk chair; XY is an estimate (~126 cm off the Tx-Rx line); z not recorded",
+    "furniture": ["bed", "desk", "cabinet", "curtain", "air-conditioner"]
+  },
+  "sampling": {
+    "issue": "bursty / non-uniform",
+    "median_rate_hz_approx": 118,
+    "effective_rate_hz_approx": 64,
+    "dt_cv_approx": 1.3,
+    "handling": "resample_uniform() before any spectral estimate"
+  },
+  "files": [
+    {"file": "CSI_new_clean_room_20260722_170000.csv", "scenario_key": "baseline", "subject_present": false},
+    {"file": "CSI_new_clean_room_2_20260722_171353.csv", "scenario_key": "baseline", "subject_present": false},
+    {"file": "CSI_breathe_20260722_172613.csv", "scenario_key": "seated-breathing", "subject_present": true, "posture": "seated"},
+    {"file": "CSI_breathe_2_20260722_172808.csv", "scenario_key": "seated-breathing", "subject_present": true, "posture": "seated"}
+  ],
+  "ground_truth": {
+    "breathing_rate_bpm": null,
+    "note": "NOT recorded with a stopwatch; absolute breathing-rate error cannot be computed for this batch"
+  },
+  "caveats": [
+    "high nominal sample rate is a median artifact of bursty sampling; effective rate ~64 Hz",
+    "resampled breathe SNR does not exceed the empty-room baseline (unlike the earlier clean 6 Hz uniform batch)",
+    "subject seated off the Tx-Rx line; coupling likely weaker than a supine subject on the line"
+  ]
+}
