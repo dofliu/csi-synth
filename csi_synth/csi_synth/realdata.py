@@ -32,6 +32,12 @@ Honesty notes:
     ~6 Hz (not 20) has been observed in practice — likely a passive/beacon-rate
     monitor-mode capture rather than an actively-solicited high-rate one; worth
     checking the capture tool's configuration if a higher rate is expected.
+  * WORSE: a capture configured for a high rate can be BURSTY — median Δt says
+    ~125 Hz but bursts+gaps drag the true average to ~63 Hz (Δt std > mean). The
+    median is NOT a valid uniform fs; load_amplitude_csv() detects this, warns, and
+    sets label['sampling_bursty']=True + effective/median rates. Call resample_uniform()
+    (twin_import) BEFORE estimate_rate/pass_select or the breathing peak collapses onto
+    the band edge. See _sampling_stats() and real_data/second_batch_20260722/.
   * This is the sim→real bridge; run sim and real through the SAME pipeline and the
     difference is the sim-to-real gap (paper Table I–IV).
 """
@@ -39,6 +45,7 @@ from __future__ import annotations
 from typing import Optional
 import csv as _csv
 import re as _re
+import warnings as _warnings
 from datetime import datetime as _datetime
 import numpy as np
 
@@ -148,6 +155,36 @@ def _parse_timestamp_seconds(values: list) -> np.ndarray:
     return t - t[0]
 
 
+def _sampling_stats(t: np.ndarray) -> dict:
+    """
+    Characterise the timestamp spacing. Returns median vs. *effective* rate and
+    a `bursty` flag.
+
+    A real gotcha (seen on ESP32 captures configured for a high packet rate):
+    packets arrive in BURSTS — the median Δt looks like 8 ms (≈125 Hz), but the
+    gaps between bursts drag the true average rate down to ~63 Hz, and the Δt
+    std is larger than its mean. Feeding that to estimate_rate AS IF it were
+    uniform mis-maps every frequency (the breathing peak collapses onto the
+    band edge). When `bursty` is True, resample_uniform() BEFORE any spectral
+    estimate — never trust the median rate as a uniform fs.
+    """
+    dt = np.diff(np.asarray(t, dtype=float))
+    dt = dt[dt > 0]
+    if dt.size == 0:
+        return {"median_rate_hz": 20.0, "effective_rate_hz": 20.0,
+                "dt_cv": 0.0, "bursty": False}
+    median_dt = float(np.median(dt))
+    median_rate = 1.0 / median_dt if median_dt > 0 else 20.0
+    span = float(t[-1] - t[0])
+    effective_rate = (len(t) - 1) / span if span > 0 else median_rate
+    mean_dt = float(np.mean(dt))
+    cv = float(np.std(dt) / mean_dt) if mean_dt > 0 else 0.0
+    bursty = bool(cv > 0.5 or effective_rate < 0.75 * median_rate)
+    return {"median_rate_hz": float(median_rate),
+            "effective_rate_hz": float(effective_rate),
+            "dt_cv": cv, "bursty": bursty}
+
+
 def load_amplitude_csv(path: str, f_center: float = 2.437e9, bandwidth: float = 20e6,
                        sample_rate: Optional[float] = None) -> CSIResult:
     """
@@ -169,10 +206,19 @@ def load_amplitude_csv(path: str, f_center: float = 2.437e9, bandwidth: float = 
     amp = np.array([[float(x) for x in r[1:]] for r in data_rows], dtype=float)
     t = _parse_timestamp_seconds(ts_raw)
 
+    stats = _sampling_stats(t)
     if sample_rate is None:
-        dt = np.diff(t)
-        dt = dt[dt > 0]
-        sample_rate = float(1.0 / np.median(dt)) if dt.size else 20.0
+        sample_rate = stats["median_rate_hz"]
+
+    if stats["bursty"]:
+        _warnings.warn(
+            f"{path}: sampling is BURSTY / non-uniform "
+            f"(median {stats['median_rate_hz']:.0f} Hz but effective "
+            f"{stats['effective_rate_hz']:.0f} Hz, Δt cv={stats['dt_cv']:.2f}). "
+            f"The median rate is NOT a valid uniform fs — resample_uniform() "
+            f"before estimate_rate / pass_select, or frequency estimates will be "
+            f"wrong (breathing peak collapses to the band edge).",
+            RuntimeWarning, stacklevel=2)
 
     cfg = RadioConfig(f_center=f_center, bandwidth=bandwidth,
                       n_subcarriers=int(amp.shape[1]), sample_rate=float(sample_rate))
@@ -181,7 +227,13 @@ def load_amplitude_csv(path: str, f_center: float = 2.437e9, bandwidth: float = 
         "n_time": int(amp.shape[0]), "n_subcarriers": int(amp.shape[1]),
         "phase_available": False,
         "nonuniform_sampling": bool(t.size > 1 and np.std(np.diff(t)) > 1e-3),
+        "sample_rate_median_hz": stats["median_rate_hz"],
+        "sample_rate_effective_hz": stats["effective_rate_hz"],
+        "sampling_dt_cv": stats["dt_cv"],
+        "sampling_bursty": stats["bursty"],
     }
+    if stats["bursty"]:
+        label["sampling_hint"] = "call resample_uniform() before spectral estimation"
     return CSIResult(csi=amp.astype(complex), t=t, freqs=cfg.subcarrier_freqs,
                      label=label, config=cfg)
 

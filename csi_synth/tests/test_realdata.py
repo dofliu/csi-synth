@@ -154,6 +154,49 @@ def test_timestamp_seconds_parses_hhmmss_and_handles_midnight_rollover():
     assert np.allclose(t, [0.0, 1.0, 2.5, 3.5])
 
 
+def test_sampling_stats_flags_bursty_but_not_uniform():
+    """The exact gotcha from a real high-rate ESP32 capture: median Δt says
+    ~125 Hz but bursts+gaps drag the effective rate to ~63 Hz. Uniform data at
+    the same median must NOT be flagged."""
+    from csi_synth.realdata import _sampling_stats
+    # uniform 20 Hz — not bursty
+    tu = np.arange(400) / 20.0
+    su = _sampling_stats(tu)
+    assert su["bursty"] is False
+    assert abs(su["median_rate_hz"] - 20.0) < 0.1
+    assert abs(su["effective_rate_hz"] - 20.0) < 0.1
+    # bursty: alternate 8 ms and 28 ms gaps → median 8 ms (125 Hz) but mean 18 ms
+    dt = np.tile(np.r_[np.full(9, 0.008), 0.20], 60)
+    tb = np.concatenate([[0.0], np.cumsum(dt)])
+    sb = _sampling_stats(tb)
+    assert sb["bursty"] is True
+    assert sb["median_rate_hz"] > 100.0            # looks fast
+    assert sb["effective_rate_hz"] < 75.0          # really isn't
+
+
+def test_load_amplitude_csv_warns_and_labels_bursty(tmp_path):
+    """load_amplitude_csv must warn + label when the capture is bursty, so a
+    downstream user knows to resample before estimate_rate."""
+    import csv as _csv
+    p = tmp_path / "bursty.csv"
+    n_sub = 52
+    rng = np.random.default_rng(0)
+    dt = np.tile(np.r_[np.full(9, 0.008), 0.20], 60)  # bursts of 8ms + 200ms gaps
+    t = np.concatenate([[0.0], np.cumsum(dt)])
+    with open(p, "w", newline="") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["Timestamp"] + [f"Sub_{k}" for k in range(n_sub)])
+        for ti in t:
+            row = np.abs(20 + rng.standard_normal(n_sub))
+            w.writerow([f"{ti:.3f}"] + [f"{v:.4f}" for v in row])
+    from csi_synth import load_amplitude_csv
+    with pytest.warns(RuntimeWarning, match="BURSTY"):
+        res = load_amplitude_csv(str(p))
+    assert res.label["sampling_bursty"] is True
+    assert res.label["sample_rate_effective_hz"] < res.label["sample_rate_median_hz"]
+    assert "resample_uniform" in res.label["sampling_hint"]
+
+
 if __name__ == "__main__":
     test_csidata_to_result_recovers_rate()
     test_load_streams_per_antenna()
